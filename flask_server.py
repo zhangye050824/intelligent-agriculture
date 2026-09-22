@@ -199,8 +199,7 @@ def _load_alarm_window(gh_label, win_start=None):
     gh_col, gh_val, gh_where = '', None, ''
     if gh_label:
         # 先把中文大棚名转成 greenhouse_id
-        inv_map = {v: k for k, v in _GH_MAP.items()}
-        gh_val = inv_map.get(gh_label, gh_label)
+        gh_val = _GH_INV_MAP.get(gh_label, gh_label)
         gh_where = f" AND greenhouse_id='{gh_val}'"
 
     conn = pymysql.connect(**MYSQL_CONF)
@@ -330,6 +329,9 @@ _GH_KEYWORDS = {
     '大棚三': '大棚三', '大棚 3': '大棚三', '大棚3': '大棚三', '三号棚': '大棚三',
 }
 
+# 正确的反向映射（只取 gh_01/gh_02/gh_03，过滤掉数字键 '1','2','3'）
+_GH_INV_MAP = {'大棚一': 'gh_01', '大棚二': 'gh_02', '大棚三': 'gh_03'}
+
 
 def _detect_intent(q):
     """意图识别：返回 (intent, params_dict)。
@@ -337,14 +339,16 @@ def _detect_intent(q):
                 alarm_reason, gh_rank, unknown"""
     q = q.strip()
     params = {}
+    ql = q.lower()  # 用于大小写不敏感匹配
 
     # 1. 归因/原因类
-    if any(k in q for k in ('为什么', '原因', '归因', '咋回事', '咋回事', '为啥')) and \
+    if any(k in q for k in ('为什么', '原因', '归因', '咋回事', '为啥')) and \
        any(k in q for k in ('高温', '告警', '热', '温度')):
         return 'alarm_reason', params
 
-    # 2. 引擎/双引擎/对齐率类
-    if any(k in q for k in ('spark', 'flink', '双引擎', '引擎差异', '对齐率', '对比')):
+    # 2. 引擎/双引擎/对齐率类（大小写不敏感）
+    if any(k in ql for k in ('spark', 'flink', '双引擎', '引擎差异', '对齐率')) and \
+       any(k in ql for k in ('差异', '对比', '不同', '区别')):
         return 'engine_diff', params
 
     # 3. 告警统计类
@@ -420,8 +424,7 @@ def _qa_answer_intent(intent, params):
         has_col, real_gh = _table_info(t)
         if not has_col or not real_gh:
             return None, ''
-        inv_map = {v: k for k, v in _GH_MAP.items()}
-        gh_val = inv_map.get(gh_label, gh_label)
+        gh_val = _GH_INV_MAP.get(gh_label, gh_label)
         return 'greenhouse_id', f" AND greenhouse_id='{gh_val}'"
 
     # 找有真实 greenhouse_id 的表
@@ -441,8 +444,7 @@ def _qa_answer_intent(intent, params):
         gh = params.get('gh')
         gh_where = ''
         if gh and has_col:
-            inv_map = {v: k for k, v in _GH_MAP.items()}
-            gh_where = f" AND greenhouse_id='{inv_map.get(gh, gh)}'"
+                gh_where = f" AND greenhouse_id='{_GH_INV_MAP.get(gh, gh)}'"
         cur.execute(f"SELECT COUNT(*), AVG(avg_temp), MAX(avg_temp) "
                      f"FROM {real_table} WHERE avg_temp > 30{gh_where}")
         cnt, avg_t, max_t = cur.fetchone()
@@ -454,10 +456,10 @@ def _qa_answer_intent(intent, params):
 
     elif intent == 'alarm_top':
         # 各大棚告警数排行
-        inv_map = {v: k for k, v in _GH_MAP.items()}
         if has_col:
             cur.execute(f"SELECT greenhouse_id, COUNT(*) FROM {real_table} "
-                         f"WHERE avg_temp > 30 GROUP BY greenhouse_id ORDER BY COUNT(*) DESC")
+                         f"WHERE avg_temp > 30 AND greenhouse_id IS NOT NULL AND greenhouse_id != '' "
+                         f"GROUP BY greenhouse_id ORDER BY COUNT(*) DESC")
             rows = cur.fetchall()
             conn.close()
             lines = []
@@ -486,6 +488,7 @@ def _qa_answer_intent(intent, params):
         if has_col:
             cur.execute(f"SELECT greenhouse_id, AVG(avg_temp), AVG(avg_humidity), AVG(max_light), "
                          f"MAX(win_start) FROM {real_table} "
+                         f"WHERE greenhouse_id IS NOT NULL AND greenhouse_id != '' "
                          f"GROUP BY greenhouse_id ORDER BY AVG(avg_temp) DESC")
             rows = cur.fetchall()
             conn.close()
@@ -526,16 +529,17 @@ def _qa_answer_intent(intent, params):
 
     elif intent == 'gh_latest':
         gh = params.get('gh', '')
-        inv_map = {v: k for k, v in _GH_MAP.items()}
         if has_col:
-            gh_val = inv_map.get(gh, gh)
+            gh_val = _GH_INV_MAP.get(gh, gh)
             cur.execute(f"SELECT win_start, avg_temp, avg_humidity, avg_soil_humidity, max_light "
                          f"FROM {real_table} WHERE greenhouse_id='{gh_val}' "
                          f"ORDER BY win_start DESC LIMIT 1")
             row = cur.fetchone()
         else:
             cur.execute(f"SELECT win_start, avg_temp, avg_humidity, avg_soil_humidity, max_light "
-                         f"FROM {real_table} ORDER BY win_start DESC LIMIT 50")
+                         f"FROM {real_table} "
+                         f"WHERE greenhouse_id IS NOT NULL AND greenhouse_id != '' "
+                         f"ORDER BY win_start DESC LIMIT 200")
             rows = cur.fetchall()
             row = None
             for r in rows:
@@ -552,8 +556,7 @@ def _qa_answer_intent(intent, params):
 
     elif intent == 'gh_compare':
         gh1, gh2 = params['gh1'], params['gh2']
-        inv_map = {v: k for k, v in _GH_MAP.items()}
-        gh1v, gh2v = inv_map.get(gh1, gh1), inv_map.get(gh2, gh2)
+        gh1v, gh2v = _GH_INV_MAP.get(gh1, gh1), _GH_INV_MAP.get(gh2, gh2)
         if has_col:
             cur.execute(f"SELECT greenhouse_id, AVG(avg_temp), AVG(avg_humidity), AVG(max_light) "
                          f"FROM {real_table} WHERE greenhouse_id IN ('{gh1v}','{gh2v}') "
@@ -615,7 +618,7 @@ def _qa_answer_intent(intent, params):
     elif intent == 'alarm_reason':
         # 复用归因逻辑
         conn.close()
-        win_data, prev_win, _ = _load_alarm_window()
+        win_data, prev_win, _ = _load_alarm_window(None)
         if not win_data or win_data.get('temp') is None or win_data['temp'] <= 30:
             return '✅ 当前无高温告警，一切正常'
         reasons = _alarm_reason_rules(win_data, prev_win)

@@ -134,6 +134,526 @@ def _num(v):
     return round(float(v), 2) if v is not None else ''
 
 
+# ============ 异常归因 Agent（规则引擎版，Issue #1） ============
+
+# 归因规则：每条规则返回 (命中得分, 原因描述, 证据片段)
+def _alarm_reason_rules(win_data, prev_win=None):
+    """win_data: dict(gh, temp, hum, soil, light, win_start, win_end)
+       prev_win: 上一窗口同大棚数据（用于判断升温速率）"""
+    reasons = []
+    t, h, soil, light = win_data['temp'], win_data['hum'], win_data['soil'], win_data['light']
+
+    # R1: 正午日照过强 —— 光照强 + 温度高
+    if light is not None and light >= 70000:
+        score = 90 if light >= 90000 else 75
+        reasons.append((score, '正午日照过强',
+                        f'同窗口光照 {light:.0f} lux（阈值 70000），太阳辐射强可能导致温室快速升温，建议检查遮阳网是否启动'))
+    elif light is not None and light >= 50000:
+        score = 55
+        reasons.append((score, '日照偏强',
+                        f'同窗口光照 {light:.0f} lux，适度阳光也可能在通风差时造成累积升温'))
+
+    # R2: 通风系统故障 —— 高温 + 空气干燥
+    if h is not None and h < 35:
+        score = 85 if h < 25 else 65
+        reasons.append((score, '通风系统故障（空气干燥）',
+                        f'同窗口空气湿度仅 {h:.1f}%（阈值 35%），高温叠加干燥通常意味着通风口关闭或风机故障'))
+
+    # R3: 升温过快 —— 对比前一窗口的升温速率
+    if prev_win and prev_win.get('temp') is not None:
+        dt = t - prev_win['temp']
+        if dt >= 4:
+            score = 80
+            reasons.append((score, '温度飙升过快（Δ{:.1f}℃/5s）'.format(dt),
+                            f'近 5 秒内温度骤升 {dt:.1f}℃，可能是保温幕未及时拉开或供暖系统未关闭'))
+        elif dt >= 2.5:
+            score = 55
+            reasons.append((score, '升温较快（Δ{:.1f}℃/5s）'.format(dt),
+                            f'温度 5 秒内上升 {dt:.1f}℃，属于偏快水平，建议关注'))
+
+    # R4: 土壤严重缺水 —— 高温 + 土壤干燥
+    if soil is not None and soil < 25:
+        score = 75 if soil < 15 else 55
+        reasons.append((score, '土壤严重缺水',
+                        f'同窗口土壤湿度仅 {soil:.1f}%，缺水导致作物蒸腾降温作用丧失，温度加速攀升'))
+
+    # R5: 高温持续 —— 查过去 60 秒是否连续高温
+    if win_data.get('recent_high_count', 0) >= 3:
+        score = 70
+        reasons.append((score, '高温已持续',
+                        f'该大棚近 60 秒内有 {win_data["recent_high_count"]} 个窗口温度超 30℃，属于持续性高温'))
+
+    # 默认兜底
+    if not reasons:
+        reasons.append((30, '多因素综合作用',
+                        '当前数据不足以判定单一原因，可能是日照、通风、土壤水分等多个因素共同作用'))
+
+    # 按得分降序排列
+    reasons.sort(key=lambda x: -x[0])
+    return reasons
+
+
+def _load_alarm_window(gh_label, win_start=None):
+    """从 MySQL 查指定大棚的最新高温窗口，或指定窗口时间的数据。
+       返回 (win_data_dict, prev_win_dict_or_None, recent_high_count)"""
+    gh_col, gh_val, gh_where = '', None, ''
+    if gh_label:
+        # 先把中文大棚名转成 greenhouse_id
+        inv_map = {v: k for k, v in _GH_MAP.items()}
+        gh_val = inv_map.get(gh_label, gh_label)
+        gh_where = f" AND greenhouse_id='{gh_val}'"
+
+    conn = pymysql.connect(**MYSQL_CONF)
+    cur = conn.cursor()
+
+    # 优先查 Spark 结果表（数据最稳定），Flink 作为备份
+    for table in ('window_stat', 'window_stat_flink'):
+        has_col, real_gh = _table_info(table)
+        gh_filter = gh_where if has_col and gh_label else ''
+        if win_start:
+            cur.execute(
+                f"SELECT greenhouse_id, win_start, win_end, avg_temp, avg_humidity, "
+                f"avg_soil_humidity, max_light FROM {table} "
+                f"WHERE win_start=%s{gh_filter} LIMIT 1",
+                (win_start,)
+            )
+            row = cur.fetchone()
+        else:
+            cur.execute(
+                f"SELECT greenhouse_id, win_start, win_end, avg_temp, avg_humidity, "
+                f"avg_soil_humidity, max_light FROM {table} "
+                f"WHERE avg_temp > 30{gh_filter} "
+                f"ORDER BY win_start DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        if row:
+            break
+    else:
+        cur.close()
+        conn.close()
+        return None, None, 0
+
+    raw_gh, ws, we, t, h, soil, light = row
+    gh = _gh_of(raw_gh, ws) if has_col or real_gh else _synth_gh(ws)
+
+    win_data = {
+        'gh': gh,
+        'temp': float(t) if t is not None else None,
+        'hum': float(h) if h is not None else None,
+        'soil': float(soil) if soil is not None else None,
+        'light': float(light) if light is not None else None,
+        'win_start': _fmt_t(ws),
+        'win_end': _fmt_t(we),
+    }
+
+    # 查同大棚上一个窗口（5 秒前）作为升温速率参考
+    prev_win = None
+    for table in ('window_stat', 'window_stat_flink'):
+        has_col, real_gh = _table_info(table)
+        gh_filter = gh_where if has_col and gh_label else ''
+        cur.execute(
+            f"SELECT greenhouse_id, win_start, win_end, avg_temp, avg_humidity, "
+            f"avg_soil_humidity, max_light FROM {table} "
+            f"WHERE win_start < %s{gh_filter} "
+            f"ORDER BY win_start DESC LIMIT 1",
+            (ws,)
+        )
+        p = cur.fetchone()
+        if p:
+            _, pws, pwe, pt, ph, psoil, plight = p
+            prev_win = {
+                'temp': float(pt) if pt is not None else None,
+                'hum': float(ph) if ph is not None else None,
+                'soil': float(psoil) if psoil is not None else None,
+                'light': float(plight) if plight is not None else None,
+                'win_start': _fmt_t(pws),
+            }
+            break
+
+    # 查近期（近 60 秒）同大棚高温窗口数
+    recent_high = 0
+    for table in ('window_stat', 'window_stat_flink'):
+        has_col, real_gh = _table_info(table)
+        gh_filter = gh_where if has_col and gh_label else ''
+        cur.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE avg_temp > 30 AND win_start >= DATE_SUB(%s, INTERVAL 60 SECOND){gh_filter}",
+            (ws,)
+        )
+        recent_high = cur.fetchone()[0] or 0
+        if recent_high:
+            break
+
+    cur.close()
+    conn.close()
+    win_data['recent_high_count'] = recent_high
+    return win_data, prev_win, recent_high
+
+
+@app.route('/api/alarm_reason')
+def api_alarm_reason():
+    """异常归因接口。
+       参数：gh=大棚名(可选) | win_start=窗口时间(可选，YYYY-MM-DD HH:MM:SS)
+       返回：{win_data, reasons: [(score, reason, detail)...], primary, secondary}"""
+    gh = request.args.get('gh', '').strip() or None
+    ws = request.args.get('win_start', '').strip() or None
+
+    win_data, prev_win, _ = _load_alarm_window(gh, ws)
+    if not win_data or win_data.get('temp') is None or win_data['temp'] <= 30:
+        return json.dumps({'error': '未找到高温窗口数据', 'gh': gh, 'win_start': ws})
+
+    reasons = _alarm_reason_rules(win_data, prev_win)
+    primary = reasons[0]
+    secondary = reasons[1:] if len(reasons) > 1 else []
+
+    return json.dumps({
+        'ok': True,
+        'window': win_data,
+        'prev_window': prev_win,
+        'reasons': [
+            {'score': r[0], 'reason': r[1], 'detail': r[2]} for r in reasons
+        ],
+        'primary': {'reason': primary[1], 'detail': primary[2], 'score': primary[0]},
+        'secondary': [
+            {'reason': r[1], 'detail': r[2], 'score': r[0]} for r in secondary
+        ],
+        'confidence': primary[0],
+    })
+
+
+# ============ RAG Q&A 侧边栏（简化版 Text2SQL，Issue #2） ============
+
+# 大棚名关键词 → 中文名映射
+_GH_KEYWORDS = {
+    '大棚一': '大棚一', '大棚 1': '大棚一', '大棚1': '大棚一', '一号棚': '大棚一',
+    '大棚二': '大棚二', '大棚 2': '大棚二', '大棚2': '大棚二', '二号棚': '大棚二',
+    '大棚三': '大棚三', '大棚 3': '大棚三', '大棚3': '大棚三', '三号棚': '大棚三',
+}
+
+
+def _detect_intent(q):
+    """意图识别：返回 (intent, params_dict)。
+       intents: alarm_count, alarm_top, gh_compare, gh_latest, engine_diff,
+                alarm_reason, gh_rank, unknown"""
+    q = q.strip()
+    params = {}
+
+    # 1. 归因/原因类
+    if any(k in q for k in ('为什么', '原因', '归因', '咋回事', '咋回事', '为啥')) and \
+       any(k in q for k in ('高温', '告警', '热', '温度')):
+        return 'alarm_reason', params
+
+    # 2. 引擎/双引擎/对齐率类
+    if any(k in q for k in ('spark', 'flink', '双引擎', '引擎差异', '对齐率', '对比')):
+        return 'engine_diff', params
+
+    # 3. 告警统计类
+    if any(k in q for k in ('告警', '高温', 'alarm')):
+        if any(k in q for k in ('最多', '最高', '排行', '哪个棚')):
+            return 'alarm_top', params
+        gh = _match_gh(q)
+        if gh:
+            params['gh'] = gh
+        return 'alarm_count', params
+
+    # 4. 大棚对比类
+    if any(k in q for k in ('对比', '比较', '哪个大棚', '排名', '排行', '最高', '最低', '平均')) and \
+       any(k in q for k in ('大棚', '温度', '湿度', '光照')):
+        return 'gh_rank', params
+
+    # 5. 单大棚最新数据类
+    gh = _match_gh(q)
+    if gh and any(k in q for k in ('最近', '当前', '现在', '最新', '多少度', '温度', '湿度', '光照')):
+        params['gh'] = gh
+        return 'gh_latest', params
+
+    # 6. 大棚对比（两个大棚）
+    if gh and ('和' in q or '与' in q):
+        gh2 = None
+        for kw, name in _GH_KEYWORDS.items():
+            if kw in q and name != gh:
+                gh2 = name
+                break
+        if gh2:
+            params['gh1'] = gh
+            params['gh2'] = gh2
+            return 'gh_compare', params
+
+    return 'unknown', params
+
+
+def _match_gh(q):
+    for kw, name in _GH_KEYWORDS.items():
+        if kw in q:
+            return name
+    return None
+
+
+def _qa_query(table, where='', limit=50):
+    """通用查询窗口统计表（spark/flink 双表兜底）"""
+    for t in ('window_stat', 'window_stat_flink'):
+        has_col, real_gh = _table_info(t)
+        if has_col and where:
+            sql = f"SELECT greenhouse_id, win_start, avg_temp, avg_humidity, avg_soil_humidity, max_light " \
+                  f"FROM {t} WHERE {where} ORDER BY win_start DESC LIMIT {limit}"
+        else:
+            sql = f"SELECT greenhouse_id, win_start, avg_temp, avg_humidity, avg_soil_humidity, max_light " \
+                  f"FROM {t} {where} ORDER BY win_start DESC LIMIT {limit}"
+        conn = pymysql.connect(**MYSQL_CONF)
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        if rows:
+            return rows, t
+    return [], None
+
+
+def _qa_answer_intent(intent, params):
+    """根据意图查数、生成自然语言回答"""
+    conn = pymysql.connect(**MYSQL_CONF)
+    cur = conn.cursor()
+
+    def _gh_col_filter(t, gh_label):
+        """返回 (gh_col_expr, gh_where_clause)"""
+        has_col, real_gh = _table_info(t)
+        if not has_col or not real_gh:
+            return None, ''
+        inv_map = {v: k for k, v in _GH_MAP.items()}
+        gh_val = inv_map.get(gh_label, gh_label)
+        return 'greenhouse_id', f" AND greenhouse_id='{gh_val}'"
+
+    # 找有真实 greenhouse_id 的表
+    real_table = None
+    for t in ('window_stat', 'window_stat_flink'):
+        _, real_gh = _table_info(t)
+        if real_gh:
+            real_table = t
+            break
+    if not real_table:
+        real_table = 'window_stat'
+        has_col = False
+    else:
+        has_col = True
+
+    if intent == 'alarm_count':
+        gh = params.get('gh')
+        gh_where = ''
+        if gh and has_col:
+            inv_map = {v: k for k, v in _GH_MAP.items()}
+            gh_where = f" AND greenhouse_id='{inv_map.get(gh, gh)}'"
+        cur.execute(f"SELECT COUNT(*), AVG(avg_temp), MAX(avg_temp) "
+                     f"FROM {real_table} WHERE avg_temp > 30{gh_where}")
+        cnt, avg_t, max_t = cur.fetchone()
+        conn.close()
+        gh_label = gh or '所有大棚'
+        if not cnt or cnt == 0:
+            return f"✅ {gh_label}暂无高温告警（avg_temp > 30℃ 的窗口为 0）"
+        return f"🔥 {gh_label}共有 **{cnt}** 次高温告警，平均温度 {float(avg_t):.1f}℃，最高 {float(max_t):.1f}℃"
+
+    elif intent == 'alarm_top':
+        # 各大棚告警数排行
+        inv_map = {v: k for k, v in _GH_MAP.items()}
+        if has_col:
+            cur.execute(f"SELECT greenhouse_id, COUNT(*) FROM {real_table} "
+                         f"WHERE avg_temp > 30 GROUP BY greenhouse_id ORDER BY COUNT(*) DESC")
+            rows = cur.fetchall()
+            conn.close()
+            lines = []
+            for raw_gh, cnt in rows:
+                gh = _norm_gh(raw_gh) or raw_gh
+                lines.append(f"- **{gh}**：{cnt} 次高温告警")
+            if not lines:
+                return '✅ 当前所有大棚均无高温告警'
+            return '🔥 各大棚高温告警排行：\n' + '\n'.join(lines)
+        else:
+            # 无真实大棚列时按时间合成
+            cur.execute(f"SELECT win_start, COUNT(*) FROM {real_table} "
+                         f"WHERE avg_temp > 30 GROUP BY win_start")
+            rows = cur.fetchall()
+            conn.close()
+            counts = {}
+            for ws, cnt in rows:
+                gh = _synth_gh(ws)
+                counts[gh] = counts.get(gh, 0) + cnt
+            ranked = sorted(counts.items(), key=lambda x: -x[1])
+            lines = [f"- **{gh}**：{cnt} 次" for gh, cnt in ranked]
+            return '🔥 各大棚高温告警排行（合成分配）：\n' + '\n'.join(lines)
+
+    elif intent == 'gh_rank':
+        # 各大棚平均温度排行（按真实 greenhouse_id 分组）
+        if has_col:
+            cur.execute(f"SELECT greenhouse_id, AVG(avg_temp), AVG(avg_humidity), AVG(max_light), "
+                         f"MAX(win_start) FROM {real_table} "
+                         f"GROUP BY greenhouse_id ORDER BY AVG(avg_temp) DESC")
+            rows = cur.fetchall()
+            conn.close()
+            if not rows:
+                return '⚠ 暂无窗口数据，请等待实时推送'
+            lines = ['📊 各大棚平均环境排行：']
+            for raw_gh, t, h, l, ws in rows:
+                gh = _norm_gh(raw_gh) or raw_gh
+                lines.append(
+                    f"- **{gh}**（截止 {_fmt_t(ws)[11:]}）: 均温 {float(t):.1f}℃ · "
+                    f"均湿 {float(h):.1f}% · 峰值光照 {float(l):.0f} lux"
+                )
+            return '\n'.join(lines)
+        else:
+            # 合成分配的 fallback
+            cur.execute(f"SELECT AVG(avg_temp), AVG(avg_humidity), AVG(max_light), win_start "
+                         f"FROM {real_table} GROUP BY win_start ORDER BY win_start DESC LIMIT 60")
+            rows = cur.fetchall()
+            conn.close()
+            counts = {}
+            for t, h, l, ws in rows:
+                gh = _synth_gh(ws)
+                bucket = counts.setdefault(gh, {'t': [], 'h': [], 'l': []})
+                bucket['t'].append(float(t))
+                bucket['h'].append(float(h))
+                bucket['l'].append(float(l))
+            lines = ['📊 各大棚平均环境排行（合成分配）：']
+            for gh in GH_LABELS:
+                b = counts.get(gh)
+                if b and b['t']:
+                    at = sum(b['t']) / len(b['t'])
+                    ah = sum(b['h']) / len(b['h'])
+                    al = sum(b['l']) / len(b['l'])
+                    lines.append(f"- **{gh}**: 均温 {at:.1f}℃ · 均湿 {ah:.1f}% · 光照 {al:.0f} lux")
+                else:
+                    lines.append(f"- **{gh}**: 暂无数据")
+            return '\n'.join(lines)
+
+    elif intent == 'gh_latest':
+        gh = params.get('gh', '')
+        inv_map = {v: k for k, v in _GH_MAP.items()}
+        if has_col:
+            gh_val = inv_map.get(gh, gh)
+            cur.execute(f"SELECT win_start, avg_temp, avg_humidity, avg_soil_humidity, max_light "
+                         f"FROM {real_table} WHERE greenhouse_id='{gh_val}' "
+                         f"ORDER BY win_start DESC LIMIT 1")
+            row = cur.fetchone()
+        else:
+            cur.execute(f"SELECT win_start, avg_temp, avg_humidity, avg_soil_humidity, max_light "
+                         f"FROM {real_table} ORDER BY win_start DESC LIMIT 50")
+            rows = cur.fetchall()
+            row = None
+            for r in rows:
+                if _synth_gh(r[0]) == gh:
+                    row = r
+                    break
+        conn.close()
+        if not row:
+            return f"⚠ 大棚【{gh}】暂无数据，请等待实时推送"
+        ws, t, h, s, l = row
+        return (f"🌿 **{gh}** 最新窗口（{_fmt_t(ws)}）: "
+                f"温度 **{float(t):.1f}℃** · 湿度 **{float(h):.1f}%** · "
+                f"土壤湿度 **{float(s):.1f}%** · 光照 **{float(l):.0f} lux**")
+
+    elif intent == 'gh_compare':
+        gh1, gh2 = params['gh1'], params['gh2']
+        inv_map = {v: k for k, v in _GH_MAP.items()}
+        gh1v, gh2v = inv_map.get(gh1, gh1), inv_map.get(gh2, gh2)
+        if has_col:
+            cur.execute(f"SELECT greenhouse_id, AVG(avg_temp), AVG(avg_humidity), AVG(max_light) "
+                         f"FROM {real_table} WHERE greenhouse_id IN ('{gh1v}','{gh2v}') "
+                         f"GROUP BY greenhouse_id")
+            rows = cur.fetchall()
+        else:
+            cur.execute(f"SELECT win_start, avg_temp, avg_humidity, max_light "
+                         f"FROM {real_table} ORDER BY win_start DESC LIMIT 120")
+            rows = []
+            for r in cur.fetchall():
+                gh = _synth_gh(r[0])
+                rows.append((gh, r[1], r[2], r[3]))
+        conn.close()
+        if not rows:
+            return '⚠ 暂无数据可对比'
+        lines = ['⚖️ ' + gh1 + ' vs ' + gh2 + ' 近 60 窗口平均对比：']
+        bucket = {}
+        for raw_gh, t, h, l in rows:
+            gh = _norm_gh(raw_gh) if has_col else raw_gh
+            b = bucket.setdefault(gh, {'t': [], 'h': [], 'l': []})
+            b['t'].append(float(t))
+            b['h'].append(float(h))
+            b['l'].append(float(l))
+        for gh in (gh1, gh2):
+            if gh in bucket:
+                b = bucket[gh]
+                at = sum(b['t']) / len(b['t'])
+                ah = sum(b['h']) / len(b['h'])
+                al = sum(b['l']) / len(b['l'])
+                lines.append(f"- **{gh}**: 均温 {at:.1f}℃ · 均湿 {ah:.1f}% · 光照 {al:.0f} lux")
+            else:
+                lines.append(f"- **{gh}**: 暂无数据")
+        if gh1 in bucket and gh2 in bucket:
+            d = bucket[gh1]['t'] - bucket[gh2]['t'] if bucket[gh1]['t'] and bucket[gh2]['t'] else 0
+            verdict = f"**{gh1} {'高' if d > 0 else '低'}** {abs(d):.1f}℃"
+            lines.append(f"→ 结论：{verdict}")
+        return '\n'.join(lines)
+
+    elif intent == 'engine_diff':
+        # 复用引擎对比逻辑
+        spark_map = _load_engine_windows('window_stat', 100)
+        flink_map = _load_engine_windows('window_stat_flink', 100)
+        pairs = _aligned_pairs(spark_map, flink_map, 100)
+        conn.close()
+        if not pairs:
+            return '⚠ 暂无双引擎对齐的窗口数据，请等待实时推送'
+        # 计算平均偏差
+        import statistics
+        diff_t_list = [abs(p['diff_temp']) for p in pairs if p['diff_temp'] is not None]
+        avg_diff_t = statistics.mean(diff_t_list) if diff_t_list else 0
+        spark_ok = _engine_stats('window_stat')
+        flink_ok = _engine_stats('window_stat_flink')
+        return (f"🔀 **Spark** vs **Flink** 双引擎状态：\n"
+                f"- Spark: {spark_ok['windows']} 窗口 · 状态{'✅ 运行中' if spark_ok['alive'] else '❌ 离线'}\n"
+                f"- Flink: {flink_ok['windows']} 窗口 · 状态{'✅ 运行中' if flink_ok['alive'] else '❌ 离线'}\n"
+                f"- 对齐窗口: {len(pairs)} 个\n"
+                f"- 平均温度偏差: **{avg_diff_t:.2f}℃**")
+
+    elif intent == 'alarm_reason':
+        # 复用归因逻辑
+        conn.close()
+        win_data, prev_win, _ = _load_alarm_window()
+        if not win_data or win_data.get('temp') is None or win_data['temp'] <= 30:
+            return '✅ 当前无高温告警，一切正常'
+        reasons = _alarm_reason_rules(win_data, prev_win)
+        primary = reasons[0]
+        others = reasons[1:]
+        lines = [f"🔥 最新高温告警（{win_data['gh']} {win_data['temp']}℃）归因分析：",
+                 f"- 主因：**{primary[1]}**（置信度 {primary[0]}%）",
+                 f"  - {primary[2]}"]
+        for r in others[:2]:
+            lines.append(f"- 次要：**{r[1]}**（{r[0]}%）")
+        return '\n'.join(lines)
+
+    else:  # unknown
+        conn.close()
+        return ('🤖 抱歉我还不太明白，你可以试试问：\n'
+                '- "大棚一最近温度多少？"\n'
+                '- "哪个大棚告警最多？"\n'
+                '- "Spark 和 Flink 有什么差异？"\n'
+                '- "为什么会高温？"')
+
+
+@app.route('/api/qa')
+def api_qa():
+    """RAG Q&A 接口（简化版 Text2SQL + 规则引擎）。
+       参数：q=用户自然语言问题"""
+    q = request.args.get('q', '').strip()
+    if not q:
+        return json.dumps({'error': '请输入问题'})
+    intent, params = _detect_intent(q)
+    answer = _qa_answer_intent(intent, params)
+    return json.dumps({
+        'ok': True,
+        'q': q,
+        'intent': intent,
+        'answer': answer,
+    })
+
+
 # ============ 历史窗口数据导出（CSV，可直接用 Excel 打开） ============
 # src=flink 导出 Flink 结果表；src=spark 导出 Spark 结果表
 @app.route('/export')

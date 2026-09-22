@@ -201,6 +201,98 @@
         .alarm-row b { color: #ff6b7d; font-size: 14px; font-variant-numeric: tabular-nums; }
         .alarm-row .tm { margin-left: auto; color: #7d95bd; font-variant-numeric: tabular-nums; }
         .alarm-empty { text-align: center; color: #5f82b5; font-size: 13px; padding: 70px 0; }
+        .alarm-row .reason-btn {
+            margin-left: auto; font-size: 11px; padding: 3px 9px; cursor: pointer;
+            border: 1px solid rgba(255,180,120,.45); border-radius: 10px;
+            background: rgba(255,140,60,.12); color: #ffb088; font-weight: 600;
+            transition: all .15s;
+        }
+        .alarm-row .reason-btn:hover { background: rgba(255,140,60,.25); color: #ffd0a0; }
+        .alarm-row .reason-btn.loading { color: #9fc4ee; border-color: rgba(100,180,255,.35); background: rgba(50,120,220,.12); }
+        .alarm-row .reason-btn.done { color: #7fd49d; border-color: rgba(120,220,160,.45); background: rgba(50,160,100,.12); }
+        .reason-box {
+            display: none; margin: 0 10px 8px; padding: 10px 12px; border-radius: 8px;
+            background: rgba(30,60,120,.35); border-left: 3px solid #ffb088;
+            font-size: 12px; line-height: 1.65; animation: dropIn .3s ease;
+        }
+        .reason-box.show { display: block; }
+        .reason-box .rb-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .reason-box .rb-head .rb-title { font-weight: 700; color: #ffd0a0; font-size: 12.5px; }
+        .reason-box .rb-head .rb-conf {
+            margin-left: auto; font-size: 10.5px; padding: 2px 8px; border-radius: 8px;
+            background: rgba(255,180,90,.18); color: #ffc890;
+        }
+        .reason-box .rb-primary { color: #ffebd5; font-weight: 600; margin-bottom: 6px; }
+        .reason-box .rb-detail { color: #a8c4ee; margin-bottom: 6px; }
+        .reason-box .rb-evidence {
+            display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px;
+        }
+        .reason-box .rb-evidence .eb-tag {
+            font-size: 10.5px; padding: 2px 8px; border-radius: 6px;
+            background: rgba(100,160,240,.18); color: #c0ddff;
+        }
+        .reason-box .rb-secondary { color: #9fc4ee; font-size: 11.5px; border-top: 1px dashed rgba(100,160,240,.25); padding-top: 6px; }
+        .reason-box .rb-secondary .sr { color: #ffd0a0; font-weight: 600; }
+        .reason-box .rb-error { color: #ff9ba5; font-size: 11.5px; }
+
+        /* ============ AI 助手侧边栏（RAG Q&A） ============ */
+        .qa-fab {
+            position: fixed; bottom: 24px; right: 24px; z-index: 999;
+            width: 52px; height: 52px; border-radius: 50%;
+            background: linear-gradient(135deg, #35c5ff, #1e6fff);
+            border: none; cursor: pointer; box-shadow: 0 4px 20px rgba(30,111,255,.5);
+            font-size: 22px; color: #fff; transition: all .25s;
+        }
+        .qa-fab:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(30,111,255,.7); }
+        .qa-fab.active { background: linear-gradient(135deg, #ff6b7d, #c9302c); box-shadow: 0 4px 20px rgba(201,48,44,.5); }
+        .qa-panel {
+            position: fixed; bottom: 88px; right: 24px; z-index: 998;
+            width: 360px; height: 540px; max-height: 70vh;
+            background: linear-gradient(160deg, #0a1e44, #0d2250);
+            border: 1px solid rgba(80,160,240,.35); border-radius: 14px;
+            box-shadow: 0 8px 36px rgba(0,30,80,.75), 0 0 0 1px rgba(127,216,255,.15) inset;
+            display: none; flex-direction: column; overflow: hidden;
+        }
+        .qa-panel.show { display: flex; animation: dropIn .3s ease; }
+        .qa-header {
+            padding: 12px 16px; border-bottom: 1px solid rgba(100,180,255,.2);
+            display: flex; align-items: center; gap: 10px;
+        }
+        .qa-header .qa-title { font-size: 14px; font-weight: 700; color: #35c5ff; }
+        .qa-header .qa-sub { font-size: 10.5px; color: #6f92c2; }
+        .qa-messages {
+            flex: 1; overflow-y: auto; padding: 12px 14px;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .qa-msg { max-width: 88%; padding: 8px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.55; }
+        .qa-msg.user { align-self: flex-end; background: linear-gradient(135deg, #1e6fff, #35c5ff); color: #fff; border-bottom-right-radius: 3px; }
+        .qa-msg.bot { align-self: flex-start; background: rgba(30,60,120,.6); color: #c5ddff; border-bottom-left-radius: 3px; border: 1px solid rgba(100,180,255,.2); white-space: pre-wrap; }
+        .qa-msg.bot .intent-tag { font-size: 9.5px; color: #7fc0ff; margin-top: 4px; }
+        .qa-msg.bot .typing { display: inline-block; animation: blink 1.2s infinite; }
+        @keyframes blink { 0%,50% { opacity: .3; } 100% { opacity: 1; } }
+        .qa-suggest {
+            padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 6px;
+            border-top: 1px solid rgba(100,180,255,.15);
+        }
+        .qa-suggest button {
+            font-size: 11px; padding: 3px 9px; border-radius: 10px;
+            background: rgba(50,120,220,.18); border: 1px solid rgba(100,180,255,.25);
+            color: #9fc4ee; cursor: pointer; transition: all .15s;
+        }
+        .qa-suggest button:hover { background: rgba(50,120,220,.35); color: #fff; }
+        .qa-input {
+            display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid rgba(100,180,255,.2);
+        }
+        .qa-input input {
+            flex: 1; padding: 8px 12px; border-radius: 20px; border: 1px solid rgba(100,180,255,.3);
+            background: rgba(30,60,120,.6); color: #fff; font-size: 12.5px; outline: none;
+        }
+        .qa-input input:focus { border-color: #35c5ff; box-shadow: 0 0 0 2px rgba(53,197,255,.15); }
+        .qa-input button {
+            padding: 8px 14px; border-radius: 20px; border: none; cursor: pointer;
+            background: linear-gradient(135deg, #35c5ff, #1e6fff); color: #fff; font-size: 12px; font-weight: 600;
+        }
+        .qa-input button:disabled { opacity: .5; cursor: not-allowed; }
 
         /* ============ 底部四图 ============ */
         .bottom-row { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 16px; }
@@ -899,6 +991,30 @@ env.execute("greenhouse_flink_window_stat")</pre>
     <span>Python 模拟生产者 → Kafka(sensor_data) → <b>Spark Structured Streaming / Flink DataStream 双引擎</b> 窗口聚合 → MySQL → Flask + SocketIO → ECharts</span>
     <span>SocketIO 实时推送 · 5 秒窗口 · 事件时间 + Watermark · Checkpoint 精确一次</span>
 </footer>
+
+<!-- ============ AI 助手 Q&A 侧边栏（Issue #2） ============ -->
+<button class="qa-fab" id="qaFab" title="AI 智能助手">🤖</button>
+<div class="qa-panel" id="qaPanel">
+    <div class="qa-header">
+        <div>
+            <div class="qa-title">🌱 智能农业 AI 助手</div>
+            <div class="qa-sub">自然语言查询 · 规则引擎 · 归因分析</div>
+        </div>
+    </div>
+    <div class="qa-messages" id="qaMessages">
+        <div class="qa-msg bot">你好！我可以帮你回答关于大棚数据的问题 🌿</div>
+    </div>
+    <div class="qa-suggest">
+        <button data-q="大棚一最近温度多少？">大棚一温度</button>
+        <button data-q="哪个大棚告警最多？">告警排行</button>
+        <button data-q="Spark 和 Flink 有什么差异？">双引擎差异</button>
+        <button data-q="为什么会高温？">高温归因</button>
+    </div>
+    <div class="qa-input">
+        <input type="text" id="qaInput" placeholder="问我任何大棚相关问题…" autocomplete="off">
+        <button id="qaSend">发送</button>
+    </div>
+</div>
 
 <script>
     const socket = io();
@@ -1619,10 +1735,76 @@ env.execute("greenhouse_flink_window_stat")</pre>
             box.innerHTML = '<div class="alarm-empty">✅ 暂无高温告警，各棚环境正常</div>';
             return;
         }
-        box.innerHTML = state.alarms.map(a =>
+        // 每条告警带一个唯一 key，用于缓存归因结果状态
+        box.innerHTML = state.alarms.map((a, i) =>
             '<div class="alarm-row"><span class="gh">⚠ ' + a.gh + '</span><b>' + a.temp + '℃</b>' +
-            '<span class="tm">' + a.time + '</span></div>').join('');
+            '<button class="reason-btn" data-gh="' + a.gh + '" data-idx="' + i + '" ' +
+            'onclick="window.__showReason(\'' + a.gh + '\', this)">🔍 归因分析</button></div>' +
+            '<div class="reason-box" id="rb_' + i + '"></div>').join('');
     }
+
+    /* 异常归因分析：调后端 /api/alarm_reason 展开结果面板 */
+    window.__showReason = function(gh, btn) {
+        const idx = btn.getAttribute('data-idx');
+        const box = document.getElementById('rb_' + idx);
+
+        // 已展开则折叠
+        if (box.classList.contains('show')) {
+            box.classList.remove('show');
+            btn.classList.remove('done');
+            btn.innerText = '🔍 归因分析';
+            return;
+        }
+
+        btn.classList.add('loading'); btn.innerText = '⏳ 分析中…';
+        fetch('/api/alarm_reason?gh=' + encodeURIComponent(gh))
+            .then(r => r.json())
+            .then(data => {
+                btn.classList.remove('loading'); btn.classList.add('done');
+                btn.innerText = '✅ 已归因';
+
+                if (!data.ok) {
+                    box.innerHTML = '<div class="rb-error">⚠ ' + (data.error || '未找到数据') + '</div>';
+                    box.classList.add('show');
+                    return;
+                }
+
+                const w = data.window;
+                // 证据标签
+                const ev = [];
+                if (w.temp != null) ev.push('<span class="eb-tag">温度 ' + w.temp + '℃</span>');
+                if (w.hum != null) ev.push('<span class="eb-tag">湿度 ' + w.hum + '%</span>');
+                if (w.soil != null) ev.push('<span class="eb-tag">土湿 ' + w.soil + '%</span>');
+                if (w.light != null) ev.push('<span class="eb-tag">光照 ' + Math.round(w.light) + ' lux</span>');
+                if (w.win_start) ev.push('<span class="eb-tag">窗口 ' + w.win_start.slice(11) + '</span>');
+
+                // 次要原因
+                let secHtml = '';
+                if (data.secondary && data.secondary.length) {
+                    secHtml = '<div class="rb-secondary">其他可能：' +
+                        data.secondary.map(s =>
+                            '<span class="sr">' + s.reason + '</span><span>（' + s.score + '）</span>').join(' · ') +
+                        '</div>';
+                }
+
+                box.innerHTML =
+                    '<div class="rb-head">' +
+                        '<span class="rb-title">🔍 归因分析结论</span>' +
+                        '<span class="rb-conf">置信度 ' + data.confidence + '%</span>' +
+                    '</div>' +
+                    '<div class="rb-primary">主因：' + data.primary.reason + '</div>' +
+                    '<div class="rb-detail">' + data.primary.detail + '</div>' +
+                    '<div class="rb-evidence">' + ev.join('') + '</div>' +
+                    secHtml;
+                box.classList.add('show');
+            })
+            .catch(() => {
+                btn.classList.remove('loading');
+                btn.innerText = '🔍 归因失败';
+                box.innerHTML = '<div class="rb-error">⚠ 网络错误，请刷新后重试</div>';
+                box.classList.add('show');
+            });
+    };
 
     function updateHeader() {
         document.getElementById('stOnline').innerText = GHS.filter(g => state.latest[g]).length;
@@ -1766,6 +1948,67 @@ env.execute("greenhouse_flink_window_stat")</pre>
         if (orderlyBar) orderlyBar.resize();
         if (efficiencyChart) efficiencyChart.resize();
         if (biasChart) biasChart.resize();
+    });
+
+    /* ============ AI 助手 Q&A 交互（Issue #2） ============ */
+    const qaFab = document.getElementById('qaFab');
+    const qaPanel = document.getElementById('qaPanel');
+    const qaInput = document.getElementById('qaInput');
+    const qaSend = document.getElementById('qaSend');
+    const qaMessages = document.getElementById('qaMessages');
+
+    qaFab.onclick = () => {
+        qaPanel.classList.toggle('show');
+        qaFab.classList.toggle('active', qaPanel.classList.contains('show'));
+        if (qaPanel.classList.contains('show')) qaInput.focus();
+    };
+
+    function qaAppend(text, isUser, intent) {
+        const div = document.createElement('div');
+        div.className = 'qa-msg ' + (isUser ? 'user' : 'bot');
+        div.innerText = text;
+        if (!isUser && intent) {
+            const tag = document.createElement('div');
+            tag.className = 'intent-tag';
+            tag.innerText = '🎯 意图: ' + intent;
+            div.appendChild(tag);
+        }
+        qaMessages.appendChild(div);
+        qaMessages.scrollTop = qaMessages.scrollHeight;
+        return div;
+    }
+
+    async function qaAsk(q) {
+        if (!q.trim()) return;
+        qaAppend(q, true);
+        qaInput.value = '';
+        qaSend.disabled = true;
+
+        const typingDiv = qaAppend('正在思考…', false);
+        typingDiv.querySelector('.intent-tag')?.remove();
+
+        try {
+            const resp = await fetch('/api/qa?q=' + encodeURIComponent(q));
+            const data = await resp.json();
+            typingDiv.remove();
+            if (data.ok) {
+                qaAppend(data.answer, false, data.intent);
+            } else {
+                qaAppend('⚠ ' + (data.error || '查询失败'), false);
+            }
+        } catch (err) {
+            typingDiv.remove();
+            qaAppend('⚠ 网络错误，请确认 Flask 后端已启动', false);
+        }
+        qaSend.disabled = false;
+    }
+
+    qaSend.onclick = () => qaAsk(qaInput.value);
+    qaInput.onkeydown = e => { if (e.key === 'Enter') qaAsk(qaInput.value); };
+
+    // 推荐问题按钮
+    document.querySelectorAll('.qa-suggest button').forEach(btn => {
+        btn.onclick = () => qaAsk(btn.getAttribute('data-q'));
     });
 </script>
 </body>

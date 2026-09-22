@@ -1,0 +1,1772 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智慧农业大棚 · 实时监测大屏</title>
+    <script src="{{ url_for('static', filename='echarts.min.js') }}?v=20260912"></script>
+    <script src="{{ url_for('static', filename='socket.io.min.js') }}?v=20260912"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+            color: #dcecff;
+            min-height: 100vh;
+            padding: 14px 18px 18px;
+            background:
+                radial-gradient(1400px 700px at 85% -15%, rgba(30,110,255,.22), transparent 55%),
+                radial-gradient(1000px 600px at 5% 115%, rgba(0,190,255,.14), transparent 55%),
+                radial-gradient(600px 400px at 50% 50%, rgba(20,80,180,.08), transparent 70%),
+                linear-gradient(168deg, #020a1c 0%, #041533 50%, #020818 100%);
+            background-attachment: fixed;
+        }
+        /* 网格背景纹理（只在大屏可见，增加科技感） */
+        body::before {
+            content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+            background-image:
+                linear-gradient(rgba(64,140,255,.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(64,140,255,.04) 1px, transparent 1px);
+            background-size: 48px 48px;
+            mask-image: radial-gradient(ellipse at center, black 40%, transparent 80%);
+            -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 80%);
+        }
+        body > * { position: relative; z-index: 1; }
+
+        .panel {
+            background: linear-gradient(160deg, rgba(12,36,78,.88), rgba(6,20,50,.94));
+            border: 1px solid rgba(64,160,255,.28);
+            border-radius: 14px;
+            box-shadow:
+                0 8px 32px rgba(0,10,40,.6),
+                inset 0 1px 0 rgba(120,200,255,.12),
+                inset 0 0 40px rgba(30,90,200,.04);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+
+        /* ============ 顶部统计栏 ============ */
+        .top-bar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 24px; margin-bottom: 14px; gap: 18px; flex-wrap: wrap;
+            position: relative; z-index: 1000;
+        }
+        .title-wrap { display: flex; align-items: center; gap: 14px; }
+        .logo { font-size: 34px; filter: drop-shadow(0 0 10px rgba(80,220,120,.6)); }
+        h1 { font-size: 26px; font-weight: 800; letter-spacing: 2px; color: #fff; white-space: nowrap;
+            background: linear-gradient(120deg, #fff 30%, #7fd8ff 100%);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .pipeline { font-size: 11px; color: #5f88bd; letter-spacing: 1.5px; margin-top: 3px; }
+
+        .head-stats { display: flex; gap: 28px; }
+        .hs { text-align: center; padding: 6px 16px; border-radius: 10px;
+            background: rgba(30,90,180,.12); border: 1px solid rgba(64,160,255,.18); }
+        .hs b { display: block; font-size: 24px; font-weight: 800; color: #4da9ff; font-variant-numeric: tabular-nums; }
+        .hs.warn b { color: #ff5c6e; }
+        .hs span { font-size: 11px; color: #6f92c2; letter-spacing: 1px; }
+
+        .clock-box { text-align: right; }
+        .clock { font-size: 26px; font-weight: 800; color: #eaf6ff; font-variant-numeric: tabular-nums; }
+        .date-line { font-size: 11.5px; color: #6f92c2; margin-top: 2px; }
+
+        /* 实时推送徽标 */
+        .push {
+            display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700;
+            color: #35e0c8; border: 1px solid rgba(53,224,200,.45); background: rgba(53,224,200,.1);
+            padding: 8px 14px; border-radius: 20px; white-space: nowrap;
+        }
+        .push i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: blink 1.4s infinite; }
+        .push.off { color: #7d95bd; border-color: rgba(125,149,189,.4); background: rgba(125,149,189,.08); }
+        .push.off i { animation: none; }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+        /* 下载报表下拉 */
+        .dropdown { position: relative; }
+        .btn {
+            appearance: none; cursor: pointer; text-decoration: none;
+            border: 1px solid rgba(64,170,255,.55);
+            background: linear-gradient(150deg, rgba(20,110,210,.55), rgba(10,50,120,.6));
+            color: #eaf6ff; font-size: 13px; font-weight: 700; white-space: nowrap;
+            padding: 9px 16px; border-radius: 9px;
+            box-shadow: 0 3px 10px rgba(0,20,60,.5), inset 0 1px 0 rgba(255,255,255,.18);
+            transition: all .15s ease;
+        }
+        .btn:hover { border-color: #7fd8ff;
+            background: linear-gradient(150deg, rgba(30,140,240,.8), rgba(14,70,160,.85));
+            transform: translateY(-1px); }
+        .caret { font-size: 11px; margin-left: 4px; }
+        .drop-menu {
+            display: none; position: absolute; right: 0; top: calc(100% + 8px);
+            min-width: 220px; z-index: 50;
+            background: rgba(7,26,58,.97);
+            border: 1px solid rgba(64,170,255,.45); border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,10,40,.7);
+            overflow: hidden; padding: 5px;
+        }
+        .dropdown.open .drop-menu { display: block; animation: dropIn .16s ease; }
+        @keyframes dropIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+        .drop-menu a {
+            display: flex; align-items: center; gap: 8px;
+            padding: 10px 12px; border-radius: 7px;
+            color: #cfe8ff; font-size: 13px; font-weight: 600;
+            text-decoration: none; cursor: pointer; white-space: nowrap;
+            transition: background .12s ease, color .12s ease;
+        }
+        .drop-menu a:hover { background: rgba(30,140,240,.35); color: #fff; }
+        .drop-menu a em { margin-left: auto; font-style: normal; font-size: 10px; font-weight: 700;
+            color: #7fd8ff; border: 1px solid rgba(64,170,255,.5); border-radius: 4px; padding: 1px 6px; }
+
+        /* ============ 三大棚卡片 ============ */
+        .gh-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+        .gh-card {
+            cursor: pointer; border-radius: 14px; padding: 14px 18px 10px;
+            background: linear-gradient(160deg, rgba(12,36,78,.90), rgba(6,20,50,.94));
+            border: 1px solid rgba(64,160,255,.30);
+            box-shadow: 0 8px 28px rgba(0,10,40,.55), inset 0 1px 0 rgba(120,200,255,.1);
+            transition: all .18s cubic-bezier(.2,.8,.2,1);
+            position: relative; overflow: hidden;
+        }
+        .gh-card::before {
+            content: ""; position: absolute; inset: 0; pointer-events: none;
+            background: linear-gradient(135deg, rgba(120,200,255,.06) 0%, transparent 50%);
+        }
+        .gh-card:hover { transform: translateY(-2px); border-color: rgba(127,216,255,.55);
+            box-shadow: 0 12px 36px rgba(0,20,60,.65), 0 0 0 1px rgba(127,216,255,.25),
+                        inset 0 1px 0 rgba(120,200,255,.15); }
+        .gh-card.active { border-color: #35c5ff;
+            box-shadow: 0 0 0 1px #35c5ff, 0 0 28px rgba(53,197,255,.35),
+                        0 8px 24px rgba(0,10,40,.55), inset 0 1px 0 rgba(120,220,255,.15); }
+        .gh-card.alert { border-color: rgba(255,80,100,.65);
+            box-shadow: 0 0 22px rgba(255,60,80,.25), 0 8px 28px rgba(0,10,40,.55); }
+        .gh-card.active.alert { border-color: #ff5c6e;
+            box-shadow: 0 0 0 1px #ff5c6e, 0 0 28px rgba(255,60,80,.4), 0 8px 28px rgba(0,10,40,.55); }
+        .gh-head { display: flex; align-items: center; gap: 8px; }
+        .gh-name { font-size: 17px; font-weight: 800; color: #fff; letter-spacing: 1px; }
+        .badge {
+            margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 10px;
+            border-radius: 20px; display: flex; align-items: center; gap: 5px; white-space: nowrap;
+        }
+        .badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .badge.ok { color: #3ce6a8; background: rgba(46,230,166,.12); border: 1px solid rgba(46,230,166,.35); }
+        .badge.warn { color: #ff6b7d; background: rgba(255,77,94,.12); border: 1px solid rgba(255,77,94,.4); }
+        .gh-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0 10px; }
+        .m-label { font-size: 11.5px; color: #7d9cc9; white-space: nowrap; }
+        .m-label em { font-style: normal; margin-right: 4px; }
+        .m-value { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.15; }
+        .m-value small { font-size: 12px; color: #7d9cc9; font-weight: 400; margin-left: 2px; }
+        .v-temp { color: #ff8a4c; }
+        .v-hum { color: #27c8f0; }
+        .v-light { color: #ffd23c; }
+        .gh-foot { font-size: 11.5px; color: #6f92c2; border-top: 1px solid rgba(70,130,220,.15); padding-top: 7px; }
+        .gh-foot i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #2ee6a6; margin-right: 6px; }
+
+        /* ============ 面板标题 ============ */
+        .p-title {
+            font-size: 15px; font-weight: 700; color: #e8f3ff;
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px;
+            padding: 14px 16px 8px; letter-spacing: 1px;
+            border-bottom: 1px solid rgba(64,160,255,.15);
+        }
+        .p-title::before { content: ""; width: 4px; height: 16px; border-radius: 2px;
+            background: linear-gradient(180deg, #35c5ff 0%, #1e6fff 100%); flex: none;
+            box-shadow: 0 0 8px rgba(53,197,255,.5); }
+        .p-title .sub { margin-left: auto; font-size: 11px; font-weight: 400; color: #6f92c2; letter-spacing: .5px; }
+        .p-title .sub.warn-sub { color: #ff8a94; }
+        .p-title .cnt { font-size: 11px; color: #fff; background: rgba(255,77,94,.75);
+            border-radius: 10px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
+        .p-title .gh-switch { margin-left: auto; display: inline-flex; gap: 4px; }
+        .gh-switch button {
+            font-size: 11px; color: #9fc4ee; cursor: pointer; padding: 2px 9px;
+            border-radius: 10px; border: 1px solid rgba(100,180,255,.30);
+            background: rgba(30,80,160,.18); letter-spacing: .5px; transition: all .2s;
+        }
+        .gh-switch button:hover { color: #fff; border-color: rgba(127,216,255,.6); }
+        .gh-switch button.on { color: #04122e; font-weight: 700;
+            background: linear-gradient(135deg, #35c5ff, #1e6fff); border-color: transparent; }
+        .p-title .p-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: #6f92c2; letter-spacing: .5px; }
+        #cmpChart { cursor: pointer; }
+
+        /* ============ 主区：趋势 + 告警 ============ */
+        .main-row { display: grid; grid-template-columns: 2.1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        #lineChart { height: 400px; }
+        #alarmList { height: 404px; overflow-y: auto; padding: 4px 2px 10px; }
+        .alarm-row {
+            display: flex; align-items: center; gap: 10px;
+            margin: 7px 10px; padding: 9px 12px; border-radius: 8px;
+            background: rgba(255,77,94,.08); border-left: 3px solid #ff4d5e;
+            font-size: 12.5px; animation: dropIn .25s ease;
+        }
+        .alarm-row .gh { color: #ffb9c2; font-weight: 700; }
+        .alarm-row b { color: #ff6b7d; font-size: 14px; font-variant-numeric: tabular-nums; }
+        .alarm-row .tm { margin-left: auto; color: #7d95bd; font-variant-numeric: tabular-nums; }
+        .alarm-empty { text-align: center; color: #5f82b5; font-size: 13px; padding: 70px 0; }
+
+        /* ============ 底部四图 ============ */
+        .bottom-row { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 16px; }
+
+        /* ============ 双引擎对比区 ============ */
+        .dual-row { display: grid; grid-template-columns: 1fr 1.6fr; gap: 16px; margin-bottom: 16px; }
+        #engineChart { height: 196px; }
+        .engine-vs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; margin-top: 10px; padding: 0 14px; }
+        .engine-card { border-radius: 12px; padding: 12px 16px 14px; border: 1px solid; position: relative; overflow: hidden; }
+        .engine-card::before {
+            content: ""; position: absolute; inset: 0; pointer-events: none;
+            background: linear-gradient(135deg, rgba(255,255,255,.04) 0%, transparent 60%);
+        }
+        .engine-card.spark {
+            background: linear-gradient(150deg, rgba(140,86,10,.30), rgba(46,28,4,.55));
+            border-color: rgba(245,166,35,.45);
+            box-shadow: inset 0 1px 0 rgba(255,200,120,.08);
+        }
+        .engine-card.flink {
+            background: linear-gradient(150deg, rgba(130,22,54,.28), rgba(44,8,20,.55));
+            border-color: rgba(255,107,129,.45);
+            box-shadow: inset 0 1px 0 rgba(255,150,170,.08);
+        }
+        .eng-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+        .eng-name { font-size: 15px; font-weight: 800; letter-spacing: .5px; }
+        .engine-card.spark .eng-name { color: #ffc46b; }
+        .engine-card.flink .eng-name { color: #ff9fb0; }
+        .eng-live { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; color: #9fc4ee; }
+        .eng-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .eng-dot.on { background: #39e68f; box-shadow: 0 0 8px #39e68f; animation: blink 1.4s infinite; }
+        .eng-dot.off2 { background: #ff5c5c; box-shadow: 0 0 8px #ff5c5c; }
+        .eng-tech { font-size: 11px; color: #8fb3dd; margin-top: 5px; line-height: 1.5; }
+        .eng-stats { display: flex; gap: 14px; margin-top: 9px; }
+        .eng-stats div { flex: 1; }
+        .eng-stats i { display: block; font-style: normal; font-size: 10.5px; color: #6f97c4; }
+        .eng-stats b { font-size: 17px; font-weight: 800; color: #eaf6ff; font-variant-numeric: tabular-nums; }
+        .vs-badge { align-self: center; width: 40px; height: 40px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 13px; font-weight: 900; color: #7fd8ff; letter-spacing: 1px;
+            background: radial-gradient(circle at 30% 30%, rgba(30,140,240,.6), rgba(6,24,54,.9));
+            border: 1px solid rgba(100,190,255,.55);
+            box-shadow: 0 0 14px rgba(0,140,255,.45); }
+        .align-stats { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 11px; padding: 8px 12px;
+            border-radius: 9px; background: rgba(10,36,78,.55); border: 1px solid rgba(64,160,255,.22);
+            font-size: 12px; color: #9fc4ee; }
+        .align-stats b { color: #7fd8ff; font-weight: 800; font-variant-numeric: tabular-nums; margin: 0 2px; }
+        .eng-switch { display: flex; gap: 4px; margin-left: 10px; }
+        .eng-gh-btn {
+            cursor: pointer; font-size: 11px; font-weight: 700; color: #8fb3dd;
+            background: rgba(30,110,220,.18); border: 1px solid rgba(64,160,255,.35);
+            border-radius: 6px; padding: 3px 9px; transition: all .12s ease;
+        }
+        .eng-gh-btn:hover { color: #fff; border-color: #7fd8ff; }
+        .eng-gh-btn.active { color: #041028; background: #35c5ff; border-color: #35c5ff; }
+
+        /* —— 指标切换胶囊（温度/湿度/光照） —— */
+        .metric-tabs { display: flex; gap: 5px; margin-left: 10px; }
+        .mt-btn {
+            cursor: pointer; font-size: 11px; font-weight: 700; color: #8fb3dd;
+            background: rgba(8,30,66,.65); border: 1px solid rgba(64,160,255,.28);
+            border-radius: 20px; padding: 3px 12px; transition: all .14s ease;
+        }
+        .mt-btn:hover { color: #fff; border-color: #7fd8ff; transform: translateY(-1px); }
+        .mt-btn.active {
+            color: #041028; border-color: transparent;
+            background: linear-gradient(120deg, #7fe0ff, #35a5ff);
+            box-shadow: 0 0 12px rgba(53,197,255,.5);
+        }
+
+        /* —— 双引擎逐窗口结果明细表 —— */
+        .engine-panel { display: flex; flex-direction: column; }
+        .cmp-table-wrap {
+            margin: 2px 12px 12px; max-height: 174px; overflow-y: auto;
+            border: 1px solid rgba(64,160,255,.2); border-radius: 9px;
+            background: rgba(5,18,44,.5);
+        }
+        .cmp-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+        .cmp-table thead th {
+            position: sticky; top: 0; z-index: 2;
+            background: rgba(9,30,68,.98); color: #8fb3dd; font-weight: 700;
+            font-size: 10.5px; letter-spacing: .8px; padding: 8px 10px; text-align: right;
+            border-bottom: 1px solid rgba(64,160,255,.3);
+        }
+        .cmp-table th.c-time, .cmp-table td.c-time { text-align: left; }
+        .cmp-table tbody td {
+            padding: 6.5px 10px; text-align: right; color: #cfe4ff;
+            font-variant-numeric: tabular-nums; border-top: 1px solid rgba(70,130,220,.12);
+        }
+        .cmp-table tbody tr { transition: background .12s ease; }
+        .cmp-table tbody tr:hover { background: rgba(30,120,240,.14); }
+        .cmp-table tbody tr.is-latest {
+            background: rgba(53,197,255,.08);
+            box-shadow: inset 2.5px 0 0 #35c5ff;
+        }
+        .cmp-table .c-time { color: #9fc4ee; font-weight: 700; }
+        .latest-tag {
+            font-style: normal; font-size: 9px; font-weight: 800; letter-spacing: .5px;
+            color: #041028; background: #35e0c8; border-radius: 4px;
+            padding: 1px 5px; margin-left: 7px; animation: blink 1.4s infinite;
+        }
+        .cmp-table .c-spark { color: #ffc46b; font-weight: 800; }
+        .cmp-table .c-flink { color: #ff9fb0; font-weight: 800; }
+        .cmp-table td .u { font-style: normal; font-size: 10px; color: #6f92c2;
+            font-weight: 400; margin-left: 2px; }
+        .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+            margin-right: 6px; vertical-align: 0; }
+        .spark-dot { background: #f5a623; box-shadow: 0 0 6px #f5a623; }
+        .flink-dot { background: #ff6b81; box-shadow: 0 0 6px #ff6b81; }
+        /* 偏差数值徽章 */
+        .diff-pill {
+            display: inline-block; min-width: 48px; text-align: center;
+            font-weight: 800; border-radius: 6px; padding: 2px 8px;
+            font-variant-numeric: tabular-nums; border: 1px solid;
+        }
+        .diff-pill.st-ok { color: #3ce6a8; background: rgba(46,230,166,.1);
+            border-color: rgba(46,230,166,.4); }
+        .diff-pill.st-warn { color: #ffd23c; background: rgba(255,210,60,.1);
+            border-color: rgba(255,210,60,.4); }
+        .diff-pill.st-bad { color: #ff6b7d; background: rgba(255,90,110,.12);
+            border-color: rgba(255,90,110,.45); }
+        .diff-pill.st-unknown { color: #7d95bd; background: rgba(125,149,189,.08);
+            border-color: rgba(125,149,189,.3); }
+        /* 一致性结论胶囊 */
+        .st-pill {
+            display: inline-block; font-size: 10.5px; font-weight: 700;
+            border-radius: 20px; padding: 2.5px 10px; white-space: nowrap; border: 1px solid;
+        }
+        .st-pill.st-ok { color: #3ce6a8; background: rgba(46,230,166,.1);
+            border-color: rgba(46,230,166,.38); }
+        .st-pill.st-warn { color: #ffd23c; background: rgba(255,210,60,.08);
+            border-color: rgba(255,210,60,.35); }
+        .st-pill.st-bad { color: #ff8a94; background: rgba(255,90,110,.1);
+            border-color: rgba(255,90,110,.4); }
+        .st-pill.st-unknown { color: #8fa6c8; background: rgba(125,149,189,.08);
+            border-color: rgba(125,149,189,.3); }
+        .cmp-empty { text-align: center !important; color: #6f92c2;
+            padding: 26px 0 !important; font-size: 12.5px; }
+
+        /* ============ 雷达 + Tab 面板新增样式 ============ */
+        #radarChart { height: 290px; padding: 0 10px; }
+
+        .eng-vs-compact { margin-top: 4px; }
+        .eng-vs-compact .engine-card { padding: 8px 12px 9px; }
+        .eng-vs-compact .eng-tech { font-size: 10px; margin-top: 2px; line-height: 1.3; }
+        .eng-vs-compact .eng-stats { margin-top: 6px; gap: 8px; }
+        .eng-vs-compact .eng-stats b { font-size: 15px; }
+
+        /* Tab 指示器（点 + 滑块轨道） */
+        .tab-indicator {
+            position: relative; height: 28px; margin: 8px 12px 6px;
+            background: rgba(6,22,50,.6); border: 1px solid rgba(64,160,255,.22);
+            border-radius: 20px; overflow: hidden; cursor: pointer; user-select: none;
+        }
+        .tab-track { position: absolute; top: 3px; bottom: 3px; left: 3px; right: 3px; }
+        .tab-thumb {
+            position: absolute; top: 0; bottom: 0; left: 0;
+            width: calc((100% - 0px) / 6);
+            background: linear-gradient(120deg, #35c5ff, #1e6fff);
+            border-radius: 16px;
+            box-shadow: 0 0 14px rgba(53,197,255,.55);
+            transition: left .28s cubic-bezier(.2,.8,.2,1), width .28s cubic-bezier(.2,.8,.2,1);
+        }
+        .tab-dots {
+            position: absolute; inset: 0; display: grid; grid-template-columns: repeat(6, 1fr);
+        }
+        .tab-dots > div {
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px; font-weight: 700; color: #8fb3dd;
+            letter-spacing: .4px; cursor: pointer; z-index: 2;
+            transition: color .15s ease;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .tab-dots > div.active { color: #041028; text-shadow: 0 0 4px rgba(255,255,255,.3); }
+
+        /* Tab 内容切换 */
+        .tab-content { position: relative; min-height: 360px; padding: 4px 12px 12px; }
+        .tab-pane { display: none; animation: paneFade .28s ease; }
+        .tab-pane.active { display: block; }
+        @keyframes paneFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+        .tab-head {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+            padding: 8px 12px; background: rgba(10,36,78,.4);
+            border: 1px solid rgba(64,160,255,.2); border-radius: 8px;
+            font-size: 13px;
+        }
+        .tab-head b { color: #eaf6ff; font-size: 13.5px; font-weight: 800; }
+        .tab-desc { margin-left: auto; font-size: 11px; color: #7fa8d9; font-style: italic; }
+        .tab-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+        .t-spark { background: #f5a623; color: #f5a623; }
+        .t-flink { background: #ff6b81; color: #ff6b81; }
+        .t-neutral { background: #35c5ff; color: #35c5ff; }
+
+        /* Latency 卡片（延迟 Tab） */
+        .lat-card {
+            flex: 1; text-align: center; padding: 8px 10px; border-radius: 8px;
+            border: 1px solid; font-size: 12px;
+        }
+        .lat-card.l-spark { background: rgba(140,86,10,.2); border-color: rgba(245,166,35,.4); }
+        .lat-card.l-flink { background: rgba(130,22,54,.18); border-color: rgba(255,107,129,.4); }
+        .lat-card.l-neutral { background: rgba(10,60,120,.25); border-color: rgba(64,160,255,.4); }
+        .lat-card b { display: block; font-size: 17px; font-weight: 800; margin-top: 3px; font-variant-numeric: tabular-nums; color: #eaf6ff; }
+        .lat-card .lat-label { font-size: 10.5px; color: #8fb3dd; }
+        .lat-card .dot { vertical-align: middle; margin-right: 4px; }
+        .lat-arrow { align-self: center; color: #7fd8ff; font-size: 18px; font-weight: 700; }
+        .lat-gap {
+            align-self: center; padding: 6px 14px; border-radius: 14px; font-size: 13px; font-weight: 800;
+            color: #35e0c8; background: rgba(53,224,200,.12); border: 1px solid rgba(53,224,200,.35);
+        }
+        .eng-vs-mini { margin-top: 8px; gap: 8px; }
+        .eng-vs-mini > *:not(.eng-card):not(.lat-card) { font-size: 16px; }
+
+        /* 乱序容忍 Tab */
+        .orderly-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .orderly-card {
+            background: rgba(6,22,50,.45); border: 1px solid rgba(64,160,255,.18);
+            border-radius: 10px; padding: 10px;
+        }
+        .orderly-title { font-size: 12px; font-weight: 700; color: #bcd6f5; margin-bottom: 6px; letter-spacing: .5px; }
+        .orderly-body { height: 160px; }
+        .orderly-legend {
+            display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: #9fc4ee;
+            padding-top: 6px; border-top: 1px solid rgba(64,160,255,.15);
+        }
+        .orderly-legend .dot { margin-right: 5px; }
+        .orderly-summary {
+            margin-top: 10px; padding: 10px 14px; background: rgba(10,60,120,.2);
+            border: 1px solid rgba(64,160,255,.25); border-radius: 8px;
+            font-size: 12px; color: #bcd6f5; line-height: 1.7;
+        }
+        .orderly-summary b { color: #7fd8ff; }
+
+        /* API 代码对比 Tab */
+        .code-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .code-block {
+            background: rgba(3,10,28,.85); border: 1px solid rgba(64,160,255,.22);
+            border-radius: 10px; overflow: hidden;
+        }
+        .code-title {
+            padding: 7px 12px; font-size: 11.5px; font-weight: 800;
+            background: linear-gradient(90deg, rgba(30,90,180,.35), rgba(10,30,70,.1));
+            color: #eaf6ff; border-bottom: 1px solid rgba(64,160,255,.22);
+        }
+        .code-pre {
+            margin: 0; padding: 12px; font-size: 11px; line-height: 1.55;
+            font-family: "Consolas", "Monaco", "Source Code Pro", monospace;
+            color: #cfe4ff; white-space: pre; overflow-x: auto;
+            max-height: 280px;
+        }
+        .code-summary {
+            margin-top: 10px; padding: 10px 14px; background: rgba(10,60,120,.2);
+            border: 1px solid rgba(64,160,255,.25); border-radius: 8px;
+            font-size: 12px; color: #bcd6f5; line-height: 1.7;
+        }
+        .code-summary b { color: #7fd8ff; }
+        .spark-hi { color: #ffc46b; font-weight: 700; margin: 0 3px; }
+        .flink-hi { color: #ff9fb0; font-weight: 700; margin: 0 3px; }
+
+        /* Exactly-Once Tab */
+        .exactly-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .exactly-card {
+            background: rgba(6,22,50,.45); border: 1px solid rgba(64,160,255,.18);
+            border-radius: 10px; padding: 12px;
+        }
+        .exactly-card.wide { grid-column: 1 / -1; }
+        .exc-title { font-size: 12.5px; font-weight: 800; color: #7fd8ff; margin-bottom: 8px; letter-spacing: .5px; }
+        .exc-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; font-size: 12px; border-bottom: 1px dashed rgba(64,160,255,.15); }
+        .exc-row:last-of-type { border-bottom: none; }
+        .exc-val { color: #3ce6a8; font-weight: 800; letter-spacing: .5px; }
+        .exc-eng { color: #bcd6f5; display: flex; align-items: center; gap: 5px; }
+        .spark-txt { color: #ffc46b; }
+        .flink-txt { color: #ff9fb0; }
+        .exc-note { margin-top: 8px; padding-top: 8px; font-size: 10.5px; color: #7fa8d9; border-top: 1px solid rgba(64,160,255,.15); line-height: 1.6; }
+
+        /* 图表容器固定高度（在 Tab 里） */
+        #latencyChart, #orderlyBar, #efficiencyChart, #biasChart { height: 180px; }
+        #orderlyDonut { height: 160px; }
+
+        #gaugeChart, #cmpChart, #donutChart, #lightChart { height: 235px; }
+        #gaugeChart { height: 252px; }
+
+        footer {
+            margin-top: 16px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+            color: #5d84b5; font-size: 12px; letter-spacing: .5px; padding: 0 4px;
+        }
+        footer b { color: #5fd8ff; }
+
+        ::-webkit-scrollbar { width: 7px; }
+        ::-webkit-scrollbar-thumb { background: rgba(64,160,255,.45); border-radius: 4px; }
+
+        @media (max-width: 1200px) {
+            .gh-cards { grid-template-columns: 1fr; }
+            .main-row { grid-template-columns: 1fr; }
+            .dual-row { grid-template-columns: 1fr; }
+            .bottom-row { grid-template-columns: 1fr 1fr; }
+            #alarmList { height: 300px; }
+        }
+        @media (max-width: 760px) {
+            .bottom-row { grid-template-columns: 1fr; }
+            .head-stats { gap: 14px; }
+            .engine-vs { grid-template-columns: 1fr; }
+            .vs-badge { justify-self: center; }
+        }
+        @media print {
+            .dropdown, .push, .clock-box { display: none !important; }
+            .panel, .gh-card { break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- 顶部统计栏 -->
+<div class="top-bar panel">
+    <div class="title-wrap">
+        <div class="logo">🌱</div>
+        <div>
+            <h1>智慧农业大棚 · 实时监测大屏</h1>
+            <div class="pipeline">SENSOR → KAFKA → SPARK STREAMING → MYSQL → FLASK → ECHARTS</div>
+        </div>
+    </div>
+    <div class="head-stats">
+        <div class="hs"><b id="stOnline">0</b><span>在线大棚</span></div>
+        <div class="hs"><b id="stWin">0</b><span>窗口记录</span></div>
+        <div class="hs warn"><b id="stAlarm">0</b><span>高温告警</span></div>
+    </div>
+    <div class="clock-box">
+        <div class="clock" id="clock">--:--:--</div>
+        <div class="date-line" id="dateLine">--</div>
+    </div>
+    <div class="dropdown" id="exportDrop">
+        <button class="btn" id="dropToggle">⬇ 下载报表<span class="caret">▾</span></button>
+        <div class="drop-menu">
+            <a href="/export_compare">🔀 双引擎对比报告<em>CSV</em></a>
+            <a href="/export?src=flink">📗 Flink 历史数据<em>CSV</em></a>
+            <a href="/export?src=spark">📘 Spark 历史数据<em>CSV</em></a>
+            <a href="javascript:void(0)" id="btnCsv">📥 当前实时数据<em>CSV</em></a>
+            <a href="javascript:void(0)" id="btnPng">🖼️ 趋势分析图表<em>PNG</em></a>
+            <a href="javascript:void(0)" id="btnPdf">🖨️ 导出 PDF<em>PDF</em></a>
+        </div>
+    </div>
+    <div class="push off" id="pushBadge"><i></i><span id="pushText">连接中…</span></div>
+</div>
+
+<!-- 三个大棚卡片（点击切换趋势图） -->
+<section class="gh-cards" id="ghCards"></section>
+
+<!-- 主区：选中大棚趋势 + 高温告警 -->
+<section class="main-row">
+    <div class="panel">
+        <div class="p-title">📊 <span id="ttlTrend">大棚一</span> 窗口统计趋势
+            <span class="sub">5 秒滚动窗口 · 近 60 条 · 阈值 30℃</span>
+        </div>
+        <div id="lineChart"></div>
+    </div>
+    <div class="panel">
+        <div class="p-title">🚨 高温告警记录
+            <span class="sub warn-sub">avg_temp &gt; 30℃</span>
+            <span class="cnt" id="alarmCnt">0</span>
+        </div>
+        <div id="alarmList"></div>
+    </div>
+</section>
+
+<!-- 双引擎对比：左侧雷达（架构定性）+ 右侧 Tab（案例数据定量） -->
+<section class="dual-row" style="grid-template-columns: 1fr 1.65fr;">
+
+    <!-- ========== 左：架构雷达 + 引擎状态 ========== -->
+    <div class="panel radar-panel">
+        <!-- 引擎运行状态卡（保留） -->
+        <div class="engine-vs eng-vs-compact">
+            <div class="engine-card spark">
+                <div class="eng-head"><span class="eng-name">Apache Spark</span>
+                    <span class="eng-live" id="sparkLive"><span class="eng-dot off2"></span>检测中</span></div>
+                <div class="eng-tech">Structured Streaming · 事件时间 5s · RocksDB State</div>
+                <div class="eng-stats">
+                    <div><i>累计窗口</i><b id="sparkWin">--</b></div>
+                    <div><i>最近窗口</i><b id="sparkLast">--</b></div>
+                </div>
+            </div>
+            <div class="vs-badge">VS</div>
+            <div class="engine-card flink">
+                <div class="eng-head"><span class="eng-name">Apache Flink</span>
+                    <span class="eng-live" id="flinkLive"><span class="eng-dot off2"></span>检测中</span></div>
+                <div class="eng-tech">DataStream API · 事件时间 5s · Watermark 10s</div>
+                <div class="eng-stats">
+                    <div><i>累计窗口</i><b id="flinkWin">--</b></div>
+                    <div><i>最近窗口</i><b id="flinkLast">--</b></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 雷达图 -->
+        <div class="p-title" style="margin-top: 10px;">🎯 引擎架构特性雷达
+            <span class="sub">悬停顶点 → 右侧切换案例数据</span>
+        </div>
+        <div id="radarChart"></div>
+
+        <div class="align-stats" style="margin-top: 6px;">
+            <span>当前棚对齐 <b id="alignNum">--</b> 对</span>
+            <span>一致率 <b id="alignRate">--</b></span>
+            <span>温度差 <b id="alignTemp">--</b>℃</span>
+            <span>湿度差 <b id="alignHum">--</b>%</span>
+            <span>光照差 <b id="alignLight">--</b>lux</span>
+        </div>
+    </div>
+
+    <!-- ========== 右：Tab 切换面板（每个 Tab = 雷达一个维度） ========== -->
+    <div class="panel tab-panel">
+        <div class="p-title">📋 大棚物联网案例 · 双引擎特性差异（带真实数据）
+            <span class="eng-switch" style="margin-left: 8px;">
+                <button class="eng-gh-btn active" data-gh="大棚一">大棚一</button>
+                <button class="eng-gh-btn" data-gh="大棚二">大棚二</button>
+                <button class="eng-gh-btn" data-gh="大棚三">大棚三</button>
+            </span>
+        </div>
+
+        <!-- Tab 指示器（左右点击 / 鼠标拖动也可切换） -->
+        <div class="tab-indicator" id="tabIndicator">
+            <div class="tab-track">
+                <div class="tab-thumb" id="tabThumb"></div>
+            </div>
+            <div class="tab-dots" id="tabDots"></div>
+        </div>
+
+        <!-- Tab 内容容器 -->
+        <div class="tab-content" id="tabContent">
+
+            <!-- Tab 0：事件时间对齐 → 逐窗口偏差表 -->
+            <div class="tab-pane active" data-tab="0">
+                <div class="tab-head">
+                    <span class="tab-dot t-spark"></span><b>事件时间窗口对齐</b>
+                    <span class="tab-desc">Flink 原生 Watermark 精确；Spark 后补支持</span>
+                </div>
+                <div class="cmp-table-wrap" style="max-height: 260px;">
+                    <table class="cmp-table">
+                        <thead>
+                        <tr>
+                            <th class="c-time">窗口开始</th>
+                            <th class="c-spark"><i class="dot spark-dot"></i>Spark 温度</th>
+                            <th class="c-flink"><i class="dot flink-dot"></i>Flink 温度</th>
+                            <th>温度偏差</th>
+                            <th>湿度偏差</th>
+                            <th>光照偏差</th>
+                        </tr>
+                        </thead>
+                        <tbody id="cmpTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Tab 1：窗口延迟 → 产出时间差 -->
+            <div class="tab-pane" data-tab="1">
+                <div class="tab-head">
+                    <span class="tab-dot t-flink"></span><b>窗口产出延迟</b>
+                    <span class="tab-desc">对比两引擎最新窗口的产出时间差（秒）</span>
+                </div>
+                <div id="latencyChart"></div>
+                <div class="eng-vs eng-vs-mini" style="margin-top: 10px;">
+                    <div class="lat-card l-spark">
+                        <i class="dot spark-dot"></i><span class="lat-label">Spark 最新窗口</span>
+                        <b id="latSpark">--</b>
+                    </div>
+                    <div class="lat-arrow">→</div>
+                    <div class="lat-gap" id="latGap">-- 秒</div>
+                    <div class="lat-arrow">→</div>
+                    <div class="lat-card l-flink">
+                        <i class="dot flink-dot"></i><span class="lat-label">Flink 最新窗口</span>
+                        <b id="latFlink">--</b>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 2：乱序容忍 → 覆盖窗口数 + 独立窗口 -->
+            <div class="tab-pane" data-tab="2">
+                <div class="tab-head">
+                    <span class="tab-dot t-neutral"></span><b>乱序 / 晚到数据处理</b>
+                    <span class="tab-desc">Watermark vs micro-batch：谁覆盖窗口更多？</span>
+                </div>
+                <div class="orderly-grid">
+                    <div class="orderly-card">
+                        <div class="orderly-title">窗口覆盖度</div>
+                        <div class="orderly-body" id="orderlyDonut"></div>
+                        <div class="orderly-legend">
+                            <span><i class="dot" style="background:#35c5ff"></i>双引擎共有</span>
+                            <span><i class="dot spark-dot"></i>仅 Spark</span>
+                            <span><i class="dot flink-dot"></i>仅 Flink</span>
+                        </div>
+                    </div>
+                    <div class="orderly-card">
+                        <div class="orderly-title">窗口数对比（当前棚）</div>
+                        <div id="orderlyBar"></div>
+                    </div>
+                </div>
+                <div class="orderly-summary" id="orderlySummary">
+                    <!-- 动态填充总结文字 -->
+                </div>
+            </div>
+
+            <!-- Tab 3：API 代码对比 -->
+            <div class="tab-pane" data-tab="3">
+                <div class="tab-head">
+                    <span class="tab-dot t-spark"></span><b>API 抽象层对比</b>
+                    <span class="tab-desc">案例代码：实现 5s 事件时间窗口聚合</span>
+                </div>
+                <div class="code-compare">
+                    <div class="code-block">
+                        <div class="code-title"><i class="dot spark-dot"></i>Spark Structured Streaming</div>
+<pre class="code-pre" id="sparkCode"># ===== 位置：/home/hadoop/project/spark_write_mysql.py (PySpark) =====
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import (from_json, col, window,
+                                   avg, max, current_timestamp)
+
+spark = SparkSession.builder.appName("GreenhouseStreamAgg").getOrCreate()
+
+# 1) Kafka Source：订阅 sensor_data
+df = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "sensor_data") \
+    .load()
+
+# 2) JSON 解析 -> 提取大棚编号、温湿度、光照、时间戳
+json_df = df.select(
+    from_json(col("value").cast("string"), schema).alias("data")
+).select("data.*")
+
+# 3) 处理时间：用 Spark 读到消息的时间作为事件时间
+#    （与 Flink 用数据自带 timestamp 的事件时间形成对比）
+df_with_ts = json_df.withColumn("event_time", current_timestamp())
+
+# 4) 5 秒滚动窗口 + 10 秒 Watermark（允许晚到数据）
+agg_df = df_with_ts \
+    .withWatermark("event_time", "10 seconds") \
+    .groupBy(col("greenhouse_id"),
+             window(col("event_time"), "5 seconds")) \
+    .agg(avg("air_temp").alias("avg_temp"),
+         avg("air_humidity").alias("avg_humidity"),
+         max("light").alias("max_light"))
+
+# 5) Sink：foreachBatch 写入 MySQL window_stat
+def write_to_mysql(batch_df, batch_id):
+    batch_df.write.mode("append").jdbc(
+        url=jdbc_url, table="window_stat", properties=props)
+
+agg_df.writeStream \
+    .outputMode("append") \
+    .foreachBatch(write_to_mysql) \
+    .option("checkpointLocation", "/tmp/greenhouse_chk_v3") \
+    .start()</pre>
+                    </div>
+                    <div class="code-block">
+                        <div class="code-title"><i class="dot flink-dot"></i>Flink DataStream API</div>
+<pre class="code-pre" id="flinkCode"># ===== 位置：/home/hadoop/flink_project/flink_window_stat.py (PyFlink) =====
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors import FlinkKafkaConsumer, JdbcSink
+from pyflink.common import WatermarkStrategy, Duration, Time
+from pyflink.datastream.checkpointing_mode import CheckpointingMode
+
+env = StreamExecutionEnvironment.get_execution_environment()
+# 10 秒一次 Checkpoint，EXACTLY_ONCE（位点 + 窗口状态一起持久化）
+env.enable_checkpointing(10000, CheckpointingMode.EXACTLY_ONCE)
+
+# 1) Kafka Source：订阅 sensor_data
+kafka_consumer = FlinkKafkaConsumer(
+    "sensor_data", SimpleStringSchema(),
+    {"bootstrap.servers": "127.0.0.1:9092"})
+
+# 2) 事件时间 + Watermark：从数据自带 timestamp 提取，允许 10 秒乱序
+watermark_strategy = (
+    WatermarkStrategy
+    .for_bounded_out_of_orderness(Duration.of_seconds(10))
+    .with_timestamp_assigner(SensorTimestampAssigner()))
+
+# 3) 解析 -> 事件时间水印 -> 5 秒事件时间滚动窗口 -> 截断均值聚合
+result_stream = (
+    env.add_source(kafka_consumer)
+       .map(ParseSensorMapFunction())
+       .assign_timestamps_and_watermarks(watermark_strategy)
+       .key_by(lambda e: e.greenhouse_id)
+       .window(TumblingEventTimeWindows.of(Time.seconds(5)))
+       .process(GreenhouseWindowFunction())  # 去首尾各1条后取均值，抗噪声
+)
+
+# 4) Sink：JDBC 写入 MySQL window_stat_flink（每窗口 1 行）
+result_stream.add_sink(JdbcSink.sink(
+    "INSERT INTO window_stat_flink "
+    "(greenhouse_id, win_start, win_end, avg_temp, "
+    " avg_humidity, avg_soil_humidity, max_light) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+    OUTPUT_TYPE, jdbc_conn_opts, jdbc_exec_opts))
+
+env.execute("greenhouse_flink_window_stat")</pre>
+                    </div>
+                </div>
+                <div class="code-summary">
+                    <p><b>📌 双引擎核心差异（本项目真实实现）：</b>
+                    <span class="spark-hi">Spark</span> 用 <b>处理时间</b>（<code>current_timestamp()</code>）做窗口，内置 <code>avg/max</code> 算术聚合，声明式 SQL DSL；
+                    <span class="flink-hi">Flink</span> 用 <b>数据自带事件时间</b> + Watermark，自定义 <code>ProcessWindowFunction</code> 做<b>截断均值</b>（去首尾各 1 条抗噪声），编程式更灵活。</p>
+                </div>
+            </div>
+
+            <!-- Tab 4：窗口产出效率 → 累计/近N秒 -->
+            <div class="tab-pane" data-tab="4">
+                <div class="tab-head">
+                    <span class="tab-dot t-neutral"></span><b>窗口产出效率</b>
+                    <span class="tab-desc">累计窗口数 + 最近 60 秒窗口频率</span>
+                </div>
+                <div id="efficiencyChart"></div>
+                <div class="eng-vs eng-vs-mini" style="margin-top: 10px;">
+                    <div class="lat-card l-spark">
+                        <i class="dot spark-dot"></i><span class="lat-label">Spark 累计窗口</span>
+                        <b id="effSparkTotal">--</b>
+                    </div>
+                    <div class="lat-arrow">|</div>
+                    <div class="lat-card l-flink">
+                        <i class="dot flink-dot"></i><span class="lat-label">Flink 累计窗口</span>
+                        <b id="effFlinkTotal">--</b>
+                    </div>
+                    <div class="lat-arrow">|</div>
+                    <div class="lat-card l-neutral">
+                        <span class="lat-label">60s 窗口频率</span>
+                        <b id="effFreq">--/秒</b>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 5：精确一次一致性 → 偏差分布 + checkpoint -->
+            <div class="tab-pane" data-tab="5">
+                <div class="tab-head">
+                    <span class="tab-dot t-flink"></span><b>精确一次保障（Exactly-Once）</b>
+                    <span class="tab-desc">Checkpoint 语义 + 三指标偏差分布</span>
+                </div>
+                <div class="exactly-grid">
+                    <div class="exactly-card">
+                        <div class="exc-title">✓ 语义级别</div>
+                        <div class="exc-row">
+                            <span class="exc-eng spark-txt"><i class="dot spark-dot"></i>Spark</span>
+                            <span class="exc-val">EXACTLY_ONCE</span>
+                        </div>
+                        <div class="exc-row">
+                            <span class="exc-eng flink-txt"><i class="dot flink-dot"></i>Flink</span>
+                            <span class="exc-val">EXACTLY_ONCE</span>
+                        </div>
+                        <div class="exc-note">Spark 依赖 Kafka 事务 + Checkpoint；Flink 原生 Checkpoint。</div>
+                    </div>
+                    <div class="exactly-card">
+                        <div class="exc-title">🛡 Checkpoint 配置</div>
+                        <div class="exc-row">
+                            <span class="exc-eng spark-txt">Spark 间隔</span>
+                            <span class="exc-val">10s / 批次</span>
+                        </div>
+                        <div class="exc-row">
+                            <span class="exc-eng flink-txt">Flink 间隔</span>
+                            <span class="exc-val">60s</span>
+                        </div>
+                        <div class="exc-note">Spark 以 micro-batch 边界做 checkpoint，Flink 异步 barrier。</div>
+                    </div>
+                    <div class="exactly-card wide">
+                        <div class="exc-title">📊 当前棚三指标平均偏差</div>
+                        <div id="biasChart"></div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /tab-content -->
+    </div><!-- /tab-panel -->
+</section>
+
+<!-- 底部：仪表盘 + 三棚对比 + 占比 + 光照波动 -->
+<section class="bottom-row">
+    <div class="panel">
+        <div class="p-title">🌡 <span id="ttlGauge">大棚一</span> 温度仪表盘
+            <div class="gh-switch" id="swGauge"></div>
+        </div>
+        <div id="gaugeChart"></div>
+    </div>
+    <div class="panel">
+        <div class="p-title">📊 三棚温湿度对比 <span class="p-hint">点击柱子切换大棚</span></div>
+        <div id="cmpChart"></div>
+    </div>
+    <div class="panel">
+        <div class="p-title">🧭 <span id="ttlDonut">大棚一</span> 环境指标占比
+            <div class="gh-switch" id="swDonut"></div>
+        </div>
+        <div id="donutChart"></div>
+    </div>
+    <div class="panel">
+        <div class="p-title">📈 <span id="ttlLight">大棚一</span> 近期光照波动
+            <div class="gh-switch" id="swLight"></div>
+        </div>
+        <div id="lightChart"></div>
+    </div>
+</section>
+
+<footer>
+    <span>Python 模拟生产者 → Kafka(sensor_data) → <b>Spark Structured Streaming / Flink DataStream 双引擎</b> 窗口聚合 → MySQL → Flask + SocketIO → ECharts</span>
+    <span>SocketIO 实时推送 · 5 秒窗口 · 事件时间 + Watermark · Checkpoint 精确一次</span>
+</footer>
+
+<script>
+    const socket = io();
+    const GHS = ['大棚一', '大棚二', '大棚三'];
+    const GH_ICON = ['🏠', '🌿', '🏡'];
+    // 兜底：若后端实时流未带 greenhouse_id（单路流），则按各棚环境差异派生三棚数据
+    const GH_OFF = [
+        { dt: 0,    dh: 0,   dl: 1.00 },
+        { dt: 2.4,  dh: -6,  dl: 1.12 },
+        { dt: -2.2, dh: 5,   dl: 0.86 }
+    ];
+    // 后端实时消息里的大棚编号 -> 页面中文名
+    const GH_ID2NAME = { gh_01: '大棚一', gh_02: '大棚二', gh_03: '大棚三' };
+    const C = { temp: '#ff8a4c', hum: '#27c8f0', light: '#ffd23c' };
+    const MAXPTS = 60;   // 趋势图保留最近 60 个窗口
+
+    const state = { selected: '大棚一', win: 0, alarm: 0, latest: {}, alarms: [] };
+    const bufs = {};                       // 每个大棚独立的曲线缓冲
+    GHS.forEach(g => bufs[g] = { time: [], full: [], temp: [], hum: [], light: [] });
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+    /* ============ 工具函数 ============ */
+    const pad = n => String(n).padStart(2, '0');
+    function tickClock() {
+        const d = new Date();
+        document.getElementById('clock').innerText = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+        const wk = ['日','一','二','三','四','五','六'][d.getDay()];
+        document.getElementById('dateLine').innerText =
+            d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' 星期' + wk;
+    }
+    setInterval(tickClock, 1000); tickClock();
+
+    function fmtFull(ts) {
+        const d = new Date(ts);
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+               pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    const nowStamp = () => {
+        const d = new Date();
+        return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    };
+    const dl = (href, name) => {
+        const a = document.createElement('a'); a.href = href; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+    };
+    const area = c => new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: c + '55' }, { offset: 1, color: c + '05' }]);
+
+    /* ============ 生成三个大棚卡片 ============ */
+    const cardWrap = document.getElementById('ghCards');
+    GHS.forEach((g, gi) => {
+        const div = document.createElement('div');
+        div.className = 'gh-card' + (g === state.selected ? ' active' : '');
+        div.id = 'card_' + g;
+        div.innerHTML =
+            '<div class="gh-head"><span>' + GH_ICON[gi] + '</span><span class="gh-name">' + g + '</span>' +
+            '<span class="badge ok" id="badge_' + g + '"><i></i><span>运行正常</span></span></div>' +
+            '<div class="gh-metrics">' +
+            '<div><div class="m-label"><em>🌡</em>平均温度</div><div class="m-value v-temp"><span id="ct_' + g + '">--</span><small>℃</small></div></div>' +
+            '<div><div class="m-label"><em>💧</em>平均湿度</div><div class="m-value v-hum"><span id="ch_' + g + '">--</span><small>%</small></div></div>' +
+            '<div><div class="m-label"><em>☀</em>最大光照</div><div class="m-value v-light"><span id="cl_' + g + '">--</span><small>lux</small></div></div>' +
+            '</div>' +
+            '<div class="gh-foot"><i></i>窗口 <span id="cw_' + g + '">--:--</span> · 点击查看趋势</div>';
+        div.addEventListener('click', () => selectGh(g));
+        cardWrap.appendChild(div);
+    });
+
+    function selectGh(g) {
+        if (state.selected === g) return;
+        state.selected = g;
+        document.querySelectorAll('.gh-card').forEach(c => c.classList.remove('active'));
+        document.getElementById('card_' + g).classList.add('active');
+        ['ttlTrend', 'ttlGauge', 'ttlDonut', 'ttlLight'].forEach(id =>
+            document.getElementById(id).innerText = g);
+        syncGhSwitch();
+        updateCompare();
+        updateSelected();
+    }
+
+    /* ============ 底部面板大棚切换按钮（仪表盘/占比/光照） ============ */
+    document.querySelectorAll('.gh-switch').forEach(sw => {
+        GHS.forEach(g => {
+            const b = document.createElement('button');
+            b.innerText = g;
+            if (g === state.selected) b.classList.add('on');
+            b.addEventListener('click', () => selectGh(g));
+            sw.appendChild(b);
+        });
+    });
+    function syncGhSwitch() {
+        document.querySelectorAll('.gh-switch button').forEach(b =>
+            b.classList.toggle('on', b.innerText === state.selected));
+    }
+
+    /* ============ 1. 主趋势折线图（随选中大棚切换） ============ */
+    const lineChart = echarts.init(document.getElementById('lineChart'));
+    lineChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', backgroundColor: 'rgba(6,22,50,.92)',
+            borderColor: 'rgba(64,150,255,.5)', textStyle: { color: '#dcecff' } },
+        legend: { data: ['平均温度', '平均湿度', '最大光照'],
+            textStyle: { color: '#9fc4ee' }, top: 4, right: 14, icon: 'roundRect', itemWidth: 16 },
+        grid: { left: 50, right: 66, top: 44, bottom: 30 },
+        xAxis: { type: 'category', boundaryGap: false, data: [],
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } }, axisLabel: { color: '#7fa8d9' } },
+        yAxis: [
+            { type: 'value', name: '温湿度', min: 0, max: 100, nameTextStyle: { color: '#9fc4ee' },
+              axisLabel: { color: '#7fa8d9' },
+              splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+            { type: 'value', name: '光照(lux)', min: 0, max: 6000, nameTextStyle: { color: C.light },
+              axisLabel: { color: '#d8b85a' }, splitLine: { show: false } }
+        ],
+        series: [
+            { name: '平均温度', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: [],
+              itemStyle: { color: C.temp }, lineStyle: { width: 2.5 }, areaStyle: { color: area(C.temp) },
+              markLine: { silent: true, symbol: 'none',
+                  lineStyle: { type: 'dashed', color: '#ff4d5e', width: 1.4 },
+                  label: { color: '#ff6b7d', fontSize: 11, formatter: '阈值 30℃', position: 'end' },
+                  data: [{ yAxis: 30 }] } },
+            { name: '平均湿度', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: [],
+              itemStyle: { color: C.hum }, lineStyle: { width: 2.5 }, areaStyle: { color: area(C.hum) } },
+            { name: '最大光照', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: [],
+              itemStyle: { color: C.light }, lineStyle: { width: 2 }, yAxisIndex: 1 }
+        ]
+    });
+
+    /* ============ 2. 温度仪表盘（三层精密环 · 渐变进度 · 动态状态） ============ */
+    const gaugeChart = echarts.init(document.getElementById('gaugeChart'));
+    // 温度状态分级：数值区间 / rich 样式类 / 文案 / 颜色
+    const TEMP_STATES = [
+        { max: 15, k: 'stCold', t: '低温环境', c: '#4da9ff' },
+        { max: 28, k: 'stGood', t: '适宜生长', c: '#2ee6a6' },
+        { max: 32, k: 'stWarm', t: '温度偏高', c: '#ffb03c' },
+        { max: 99, k: 'stHot',  t: '高温告警', c: '#ff4d5e' }
+    ];
+    const tempState = v => TEMP_STATES.find(s => v < s.max) || TEMP_STATES[3];
+    const tempGradient = new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+        { offset: 0, color: '#2ee6a6' }, { offset: .42, color: '#27c8f0' },
+        { offset: .72, color: '#ffb03c' }, { offset: 1, color: '#ff4d5e' }
+    ]);
+    gaugeChart.setOption({
+        backgroundColor: 'transparent',
+        series: [
+            // —— 第 1 层：外圈精密刻度盘（纯装饰，细密刻度 + 端点数字） ——
+            {
+                type: 'gauge', radius: '98%', center: ['50%', '58%'],
+                startAngle: 210, endAngle: -30, min: 0, max: 50, splitNumber: 10,
+                axisLine: { lineStyle: { width: 2, color: [[1, 'rgba(80,150,255,.10)']] } },
+                axisTick: { distance: -13, length: 4, lineStyle: { color: 'rgba(120,180,255,.30)', width: 1 } },
+                splitLine: { distance: -15, length: 9, lineStyle: { color: 'rgba(130,195,255,.55)', width: 1.5 } },
+                axisLabel: { distance: -26, color: '#6f92c2', fontSize: 9,
+                    formatter: v => (v === 0 || v === 50) ? v : '' },
+                pointer: { show: false }, anchor: { show: false },
+                detail: { show: false }, data: [{ value: 0 }], silent: true
+            },
+            // —— 第 2 层：主进度环（圆角 · 渐变色 · 发光） ——
+            {
+                type: 'gauge', radius: '80%', center: ['50%', '58%'],
+                startAngle: 210, endAngle: -30, min: 0, max: 50, splitNumber: 5,
+                axisLine: { roundCap: true, lineStyle: { width: 15, color: [[1, 'rgba(40,80,150,.28)']] } },
+                progress: { show: true, roundCap: true, width: 15,
+                    itemStyle: { color: tempGradient,
+                        shadowBlur: 16, shadowColor: 'rgba(255,150,60,.5)' } },
+                axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+                pointer: { show: false }, anchor: { show: false },
+                detail: {
+                    valueAnimation: true, offsetCenter: [0, '-6%'], lineHeight: 20,
+                    formatter: v => {
+                        const s = tempState(v);
+                        return `{v|${v.toFixed(1)}}{u|℃}\n{${s.k}|${s.t}}`;
+                    },
+                    rich: {
+                        v: { fontSize: 33, fontWeight: 800, color: '#ffffff',
+                             textShadowBlur: 12, textShadowColor: 'rgba(80,190,255,.55)' },
+                        u: { fontSize: 14, fontWeight: 700, color: '#8fb3dd', padding: [6, 0, 0, 3] },
+                        stCold: { fontSize: 12, fontWeight: 700, color: '#4da9ff', padding: [6, 0, 0, 0] },
+                        stGood: { fontSize: 12, fontWeight: 700, color: '#2ee6a6', padding: [6, 0, 0, 0] },
+                        stWarm: { fontSize: 12, fontWeight: 700, color: '#ffb03c', padding: [6, 0, 0, 0] },
+                        stHot:  { fontSize: 12, fontWeight: 700, color: '#ff4d5e',
+                            textShadowBlur: 8, textShadowColor: 'rgba(255,77,94,.7)', padding: [6, 0, 0, 0] }
+                    }
+                },
+                data: [{ value: 0 }]
+            },
+            // —— 第 3 层：内圈同步细进度环（呼吸发光细线） ——
+            {
+                type: 'gauge', radius: '56%', center: ['50%', '58%'],
+                startAngle: 210, endAngle: -30, min: 0, max: 50,
+                axisLine: { roundCap: true, lineStyle: { width: 3, color: [[1, 'rgba(40,80,150,.30)']] } },
+                progress: { show: true, roundCap: true, width: 3,
+                    itemStyle: { color: '#35c5ff', shadowBlur: 10, shadowColor: 'rgba(53,197,255,.8)' } },
+                axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+                pointer: { show: false }, anchor: { show: false },
+                detail: { show: false }, data: [{ value: 0 }]
+            }
+        ]
+    });
+
+    /* ============ 3. 三棚温湿度对比柱状图 ============ */
+    const cmpChart = echarts.init(document.getElementById('cmpChart'));
+    const vGrad = c => new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: c }, { offset: 1, color: c + '55' }]);
+    cmpChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', backgroundColor: 'rgba(6,22,50,.92)',
+            borderColor: 'rgba(64,150,255,.5)', textStyle: { color: '#dcecff' } },
+        legend: { data: ['平均温度', '平均湿度'], top: 2, textStyle: { color: '#9fc4ee' }, icon: 'roundRect' },
+        grid: { left: 40, right: 16, top: 36, bottom: 26 },
+        xAxis: { type: 'category', data: GHS,
+            axisLabel: { color: '#b9dcff', fontWeight: 700 },
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } } },
+        yAxis: { type: 'value', max: 100, axisLabel: { color: '#7fa8d9' },
+            splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+        series: [
+            { name: '平均温度', type: 'bar', barWidth: 18, data: [0, 0, 0],
+              itemStyle: { color: vGrad(C.temp), borderRadius: [4, 4, 0, 0] } },
+            { name: '平均湿度', type: 'bar', barWidth: 18, data: [0, 0, 0],
+              itemStyle: { color: vGrad(C.hum), borderRadius: [4, 4, 0, 0] } }
+        ]
+    });
+    // 点击柱子 / 横轴名称 → 切换当前查看的大棚
+    cmpChart.on('click', p => { if (GHS.includes(p.name)) selectGh(p.name); });
+
+    /* ============ 4. 环境指标占比环形图 ============ */
+    const donutChart = echarts.init(document.getElementById('donutChart'));
+    donutChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'item', formatter: '{b}：{d}%',
+            backgroundColor: 'rgba(6,22,50,.92)', borderColor: 'rgba(64,150,255,.5)', textStyle: { color: '#dcecff' } },
+        legend: { bottom: 0, icon: 'circle', textStyle: { color: '#9fc4ee' },
+            data: ['温度', '湿度', '光照(k)'] },
+        series: [{
+            type: 'pie', radius: ['50%', '72%'], center: ['50%', '44%'],
+            label: { show: false }, itemStyle: { borderColor: '#061531', borderWidth: 2 },
+            data: [
+                { value: 1, name: '温度', itemStyle: { color: C.temp } },
+                { value: 1, name: '湿度', itemStyle: { color: C.hum } },
+                { value: 1, name: '光照(k)', itemStyle: { color: C.light } }
+            ]
+        }]
+    });
+
+    /* ============ 5. 近期光照波动面积图 ============ */
+    const lightChart = echarts.init(document.getElementById('lightChart'));
+    lightChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', backgroundColor: 'rgba(6,22,50,.92)',
+            borderColor: 'rgba(64,150,255,.5)', textStyle: { color: '#dcecff' } },
+        grid: { left: 56, right: 14, top: 18, bottom: 24 },
+        xAxis: { type: 'category', boundaryGap: false, data: [],
+            axisLabel: { color: '#7fa8d9' },
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } } },
+        yAxis: { type: 'value', min: 0, max: 6000, axisLabel: { color: '#7fa8d9' },
+            splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+        series: [{ type: 'line', smooth: true, symbol: 'none', data: [],
+            lineStyle: { width: 2, color: C.light }, areaStyle: { color: area(C.light) } }]
+    });
+
+    /* ============================================================
+       6. 双引擎对比：雷达图（架构定性）+ Tab（案例数据定量）
+       雷达维度 6 个 = 右侧 6 个 Tab，hover 雷达顶点 → 切换 Tab
+       ============================================================ */
+    const sparkColor = '#f5a623', flinkColor = '#ff6b81';
+    const METRICS = {
+        temp:  { label: '温度', unit: '℃',   sf: 'spark_temp',  ff: 'flink_temp',  df: 'diff_temp',  dec: 1, th: [0.2, 0.5] },
+        hum:   { label: '湿度', unit: '%',   sf: 'spark_hum',   ff: 'flink_hum',   df: 'diff_hum',   dec: 1, th: [0.5, 1.5] },
+        light: { label: '光照', unit: 'lux', sf: 'spark_light', ff: 'flink_light', df: 'diff_light', dec: 0, th: [30, 80] }
+    };
+    let engAll = [];
+    let engGh = '大棚一';
+    let currentTab = 0;
+
+    const RADAR_DIMS = [
+        { key: 'event_time',    label: '事件时间窗口', spark: 7,  flink: 10 },
+        { key: 'latency',       label: '窗口触发准时', spark: 6,  flink: 10 },
+        { key: 'out_of_order',  label: '乱序/晚到处理', spark: 6,  flink: 10 },
+        { key: 'api',           label: 'API 抽象灵活', spark: 9,  flink: 7  },
+        { key: 'state',         label: '状态管理能力', spark: 7,  flink: 10 },
+        { key: 'exactly_once',  label: '精确一次保障', spark: 8,  flink: 10 }
+    ];
+    const radarChart = echarts.init(document.getElementById('radarChart'));
+
+    radarChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            trigger: 'item',
+            backgroundColor: 'rgba(6,22,50,.95)', borderColor: 'rgba(64,150,255,.55)',
+            textStyle: { color: '#dcecff', fontSize: 12 },
+            formatter: function(p) {
+                if (p.seriesType === 'scatter') {
+                    const dim = RADAR_DIMS[p.dataIndex];
+                    return '<div style="font-size:12px;font-weight:800;color:#7fd8ff;margin-bottom:4px">' + dim.label + '</div>' +
+                        '<div style="margin:2px 0"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f5a623;margin-right:6px"></span>Spark <b style="color:#ffc46b">' + dim.spark + '</b>/10</div>' +
+                        '<div style="margin:2px 0"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ff6b81;margin-right:6px"></span>Flink <b style="color:#ff9fb0">' + dim.flink + '</b>/10</div>' +
+                        '<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(100,170,255,.2);font-size:11px;color:#9fc4ee">👉 点击切换右侧 Tab 查看案例数据</div>';
+                }
+                return '';
+            }
+        },
+        legend: {
+            data: ['Spark', 'Flink'], top: 4, right: 10, icon: 'circle',
+            textStyle: { color: '#9fc4ee', fontSize: 11 }, itemWidth: 10
+        },
+        radar: {
+            indicator: RADAR_DIMS.map(d => ({ name: d.label, max: 10 })),
+            center: ['50%', '55%'], radius: '60%',
+            startAngle: 90,
+            axisName: { color: '#bcd6f5', fontSize: 11, fontWeight: 700 },
+            splitLine: { lineStyle: { color: 'rgba(100,170,255,.22)' } },
+            splitArea: { show: true, areaStyle: { color: ['rgba(30,90,180,.08)', 'rgba(10,30,70,.04)'] } },
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.3)' } }
+        },
+        series: [
+            {
+                type: 'radar', name: '架构特性评分', tooltip: { show: false },
+                emphasis: { lineStyle: { width: 3 } },
+                data: [
+                    { value: RADAR_DIMS.map(d => d.spark), name: 'Spark',
+                        symbol: 'circle', symbolSize: 8,
+                        lineStyle: { color: sparkColor, width: 2 },
+                        itemStyle: { color: sparkColor, borderColor: '#041028', borderWidth: 1.5,
+                            shadowBlur: 10, shadowColor: 'rgba(245,166,35,.5)' },
+                        areaStyle: { color: 'rgba(245,166,35,.2)' } },
+                    { value: RADAR_DIMS.map(d => d.flink), name: 'Flink',
+                        symbol: 'circle', symbolSize: 8,
+                        lineStyle: { color: flinkColor, width: 2 },
+                        itemStyle: { color: flinkColor, borderColor: '#041028', borderWidth: 1.5,
+                            shadowBlur: 10, shadowColor: 'rgba(255,107,129,.5)' },
+                        areaStyle: { color: 'rgba(255,107,129,.2)' } }
+                ]
+            },
+            {
+                type: 'scatter', coordinateSystem: 'radar', tooltip: { show: true },
+                symbolSize: 22, itemStyle: { color: 'transparent', borderColor: 'transparent' },
+                emphasis: { itemStyle: { color: 'rgba(53,197,255,.5)', borderColor: '#35c5ff',
+                    borderWidth: 2, shadowBlur: 12, shadowColor: '#35c5ff' } },
+                data: RADAR_DIMS.map((d, i) => [i, (d.spark + d.flink) / 2])
+            }
+        ]
+    });
+    radarChart.on('click', function(p) { if (p.seriesType === 'scatter') setTab(p.dataIndex); });
+    radarChart.on('mouseover', function(p) { if (p.seriesType === 'scatter') setTab(p.dataIndex, true); });
+
+    // Tab 指示器
+    const tabLabels = RADAR_DIMS.map(d => d.label);
+    const tabDots = document.getElementById('tabDots');
+    tabLabels.forEach((lbl, i) => {
+        const div = document.createElement('div');
+        div.innerText = lbl;
+        if (i === 0) div.classList.add('active');
+        tabDots.appendChild(div);
+        div.addEventListener('click', () => setTab(i));
+    });
+    const indicator = document.getElementById('tabIndicator');
+    let dragging = false, dragStartX = 0;
+    indicator.addEventListener('mousedown', e => { dragging = true; dragStartX = e.clientX; });
+    document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const rect = indicator.getBoundingClientRect();
+        const ratio = clamp((e.clientX - rect.left) / rect.width, 0, 0.9999);
+        const idx = clamp(Math.floor(ratio * 6), 0, 5);
+        if (idx !== currentTab) setTab(idx, true);
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    function setTab(idx, silent) {
+        currentTab = idx;
+        const thumb = document.getElementById('tabThumb');
+        thumb.style.left = 'calc(' + idx + ' * (100% / 6))';
+        document.querySelectorAll('#tabDots > div').forEach((d, i) =>
+            d.classList.toggle('active', i === idx));
+        document.querySelectorAll('.tab-pane').forEach(p =>
+            p.classList.toggle('active', +p.dataset.tab === idx));
+        ensureTabCharts(idx);
+        if (!silent) setTimeout(resizeActiveTabCharts, 30);
+    }
+    function ensureTabCharts(tabIdx) {
+        if (tabIdx === 1) ensureLatencychart();
+        else if (tabIdx === 2) ensureOrderlycharts();
+        else if (tabIdx === 4) ensureEfficiencychart();
+        else if (tabIdx === 5) ensureBiaschart();
+    }
+    function resizeActiveTabCharts() {
+        ['latencyChart', 'orderlyDonut', 'orderlyBar', 'efficiencyChart', 'biasChart'].forEach(id => {
+            const el = document.getElementById(id);
+            const c = echarts.getInstanceByDom(el);
+            if (c) c.resize();
+        });
+    }
+
+    document.querySelectorAll('.eng-gh-btn').forEach(b => b.addEventListener('click', () => {
+        engGh = b.dataset.gh;
+        document.querySelectorAll('.eng-gh-btn').forEach(x => x.classList.toggle('active', x === b));
+        renderEngine();
+    }));
+
+    // Tab 0: 逐窗口偏差表（不再分指标，三指标一起）
+    const ST_TXT = { 'st-ok': '✓ 一致', 'st-warn': '≈ 微差', 'st-bad': '⚠ 超限', 'st-unknown': '—' };
+    function diffLevel(v, th) {
+        if (v == null) return 'st-unknown';
+        if (v <= th[0]) return 'st-ok';
+        if (v <= th[1]) return 'st-warn';
+        return 'st-bad';
+    }
+    function renderCmpTable(rows) {
+        const tb = document.getElementById('cmpTbody');
+        if (!rows.length) {
+            tb.innerHTML = '<tr><td colspan="6" class="cmp-empty">⏳ 暂无对齐窗口，请确认 Spark / Flink 任务均在运行…</td></tr>';
+            return;
+        }
+        const cell = (v, dec) => v == null ? '—' : (+v).toFixed(dec);
+        tb.innerHTML = rows.slice(-8).reverse().map((r, i) => {
+            return '<tr' + (i === 0 ? ' class="is-latest"' : '') + '>' +
+                '<td class="c-time">' + r.win_start.slice(11) + (i === 0 ? '<em class="latest-tag">LATEST</em>' : '') + '</td>' +
+                '<td class="c-spark">' + cell(r.spark_temp, 1) + '<i class="u">℃</i></td>' +
+                '<td class="c-flink">' + cell(r.flink_temp, 1) + '<i class="u">℃</i></td>' +
+                '<td><span class="diff-pill ' + diffLevel(r.diff_temp, METRICS.temp.th) + '">' + cell(r.diff_temp, 1) + '</span></td>' +
+                '<td><span class="diff-pill ' + diffLevel(r.diff_hum, METRICS.hum.th) + '">' + cell(r.diff_hum, 1) + '%</span></td>' +
+                '<td><span class="diff-pill ' + diffLevel(r.diff_light, METRICS.light.th) + '">' + cell(r.diff_light, 0) + '</span></td></tr>';
+        }).join('');
+    }
+
+    // Tab 1: 延迟（懒初始化）
+    let latencyChart = null;
+    function ensureLatencychart() {
+        if (!latencyChart) {
+            latencyChart = echarts.init(document.getElementById('latencyChart'));
+    latencyChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', backgroundColor: 'rgba(6,22,50,.95)',
+            borderColor: 'rgba(64,150,255,.55)', textStyle: { color: '#dcecff' } },
+        legend: { data: ['Spark', 'Flink'], top: 2, textStyle: { color: '#9fc4ee' } },
+        grid: { left: 70, right: 30, top: 30, bottom: 24 },
+        xAxis: { type: 'value', axisLabel: { color: '#7fa8d9', formatter: '{value}s' },
+            splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+        yAxis: { type: 'category', data: ['Spark 最新窗口', 'Flink 最新窗口'],
+            axisLabel: { color: '#bcd6f5', fontWeight: 700 },
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } } },
+        series: [{
+            type: 'bar', data: [{ value: 0, itemStyle: { color: sparkColor } },
+                                 { value: 0, itemStyle: { color: flinkColor } }],
+            barMaxWidth: 18, label: { show: true, position: 'right',
+                color: '#eaf6ff', fontWeight: 700, formatter: '{c}s' },
+            itemStyle: { borderRadius: [0, 4, 4, 0], shadowBlur: 8,
+                shadowColor: 'rgba(60,140,255,.3)' }
+        }]
+    });
+        }
+    }
+
+    // Tab 2: 覆盖度（懒初始化）
+    let orderlyDonut = null;
+    let orderlyBar = null;
+    function ensureOrderlycharts() {
+        if (!orderlyDonut) {
+            orderlyDonut = echarts.init(document.getElementById('orderlyDonut'));
+    orderlyDonut.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'item', formatter: '{b}: {c} 个 ({d}%)',
+            backgroundColor: 'rgba(6,22,50,.92)', borderColor: 'rgba(64,150,255,.5)' },
+        series: [{
+            type: 'pie', radius: ['50%', '72%'], center: ['50%', '50%'],
+            label: { show: false }, itemStyle: { borderColor: '#061531', borderWidth: 2 },
+            data: [
+                { value: 0, name: '双引擎共有', itemStyle: { color: '#35c5ff' } },
+                { value: 0, name: '仅 Spark', itemStyle: { color: sparkColor } },
+                { value: 0, name: '仅 Flink', itemStyle: { color: flinkColor } }
+            ]
+        }]
+    });
+        }
+        if (!orderlyBar) {
+            orderlyBar = echarts.init(document.getElementById('orderlyBar'));
+    orderlyBar.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', backgroundColor: 'rgba(6,22,50,.95)',
+            borderColor: 'rgba(64,150,255,.55)' },
+        grid: { left: 60, right: 20, top: 18, bottom: 24 },
+        xAxis: { type: 'category', data: ['共有窗口', 'Spark独有', 'Flink独有'],
+            axisLabel: { color: '#bcd6f5', fontSize: 10 },
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } } },
+        yAxis: { type: 'value', axisLabel: { color: '#7fa8d9' },
+            splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+        series: [{
+            type: 'bar', barWidth: 22,
+            data: [
+                { value: 0, itemStyle: { color: '#35c5ff', borderRadius: [4,4,0,0] } },
+                { value: 0, itemStyle: { color: sparkColor, borderRadius: [4,4,0,0] } },
+                { value: 0, itemStyle: { color: flinkColor, borderRadius: [4,4,0,0] } }
+            ]
+        }]
+    });
+        }
+    }
+
+    // Tab 4: 效率（懒初始化）
+    let efficiencyChart = null;
+    function ensureEfficiencychart() {
+        if (!efficiencyChart) {
+            efficiencyChart = echarts.init(document.getElementById('efficiencyChart'));
+    efficiencyChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', backgroundColor: 'rgba(6,22,50,.95)',
+            borderColor: 'rgba(64,150,255,.55)' },
+        legend: { data: ['Spark 累计窗口', 'Flink 累计窗口'], top: 2, textStyle: { color: '#9fc4ee' } },
+        grid: { left: 55, right: 20, top: 30, bottom: 24 },
+        xAxis: { type: 'category', data: ['当前大棚', '全部三棚合计'],
+            axisLabel: { color: '#bcd6f5' },
+            axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } } },
+        yAxis: { type: 'value', axisLabel: { color: '#7fa8d9' },
+            splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+        series: [
+            { id: 'eff_spark', name: 'Spark 累计窗口', type: 'bar', data: [0, 0],
+                barMaxWidth: 26, itemStyle: { color: sparkColor, borderRadius: [4,4,0,0] } },
+            { id: 'eff_flink', name: 'Flink 累计窗口', type: 'bar', data: [0, 0],
+                barMaxWidth: 26, itemStyle: { color: flinkColor, borderRadius: [4,4,0,0] } }
+        ]
+    });
+        }
+    }
+
+    // Tab 5: 偏差（懒初始化）
+    let biasChart = null;
+    function ensureBiaschart() {
+        if (!biasChart) {
+            biasChart = echarts.init(document.getElementById('biasChart'));
+            biasChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+                    backgroundColor: 'rgba(6,22,50,.95)', borderColor: 'rgba(64,150,255,.55)' },
+                grid: { left: 50, right: 20, top: 20, bottom: 28 },
+                xAxis: { type: 'category', data: ['温度(℃)', '湿度(%)', '光照(lux)'],
+                    axisLabel: { color: '#bcd6f5' },
+                    axisLine: { lineStyle: { color: 'rgba(100,180,255,.35)' } } },
+                yAxis: { type: 'value', name: '平均偏差|Δ|', nameTextStyle: { color: '#9fc4ee' },
+                    axisLabel: { color: '#7fa8d9' },
+                    splitLine: { lineStyle: { color: 'rgba(100,170,255,.1)' } } },
+                series: [{
+                    type: 'bar', barMaxWidth: 40,
+                    data: [
+                        { value: 0, itemStyle: { color: '#ff8a4c', borderRadius: [4,4,0,0] } },
+                        { value: 0, itemStyle: { color: '#27c8f0', borderRadius: [4,4,0,0] } },
+                        { value: 0, itemStyle: { color: '#ffd23c', borderRadius: [4,4,0,0] } }
+                    ],
+                    label: { show: true, position: 'top', color: '#eaf6ff', fontWeight: 700 },
+                    itemStyle: { shadowBlur: 6, shadowColor: 'rgba(60,140,255,.3)' }
+                }]
+            });
+        }
+    }
+
+    // renderEngine
+    let engineState = { spark: { windows: 0, last: '--', alive: false },
+                        flink: { windows: 0, last: '--', alive: false } };
+
+    function setEngine(tag, s) {
+        document.getElementById(tag + 'Win').innerText = s.windows;
+        document.getElementById(tag + 'Last').innerText = s.last.slice(11) || '--';
+        document.getElementById(tag + 'Live').innerHTML = s.alive
+            ? '<span class="eng-dot on"></span>运行中'
+            : '<span class="eng-dot off2"></span>已停止';
+    }
+
+    function parseSec(timeStr) {
+        if (!timeStr || timeStr === '--') return null;
+        const m = timeStr.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+        if (!m) return null;
+        return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]);
+    }
+
+    function renderEngine() {
+        const rows = engAll.filter(x => x.gh === engGh);
+        document.getElementById('alignNum').innerText = rows.length;
+        const avg = k => {
+            const v = rows.map(x => x[k]).filter(x => x != null);
+            return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(2) : '--';
+        };
+        document.getElementById('alignTemp').innerText = avg('diff_temp');
+        document.getElementById('alignHum').innerText = avg('diff_hum');
+        document.getElementById('alignLight').innerText = avg('diff_light');
+        let hit = 0, tot = 0;
+        rows.forEach(r => Object.keys(METRICS).forEach(k => {
+            const d = r[METRICS[k].df];
+            if (d != null) { tot++; if (d <= METRICS[k].th[0]) hit++; }
+        }));
+        document.getElementById('alignRate').innerText = tot ? Math.round(hit / tot * 100) + '%' : '--';
+
+        renderCmpTable(rows);
+
+        const st = parseSec(engineState.spark.last);
+        const ft = parseSec(engineState.flink.last);
+        const now = new Date();
+        const sparkDelay = st ? Math.max(0, Math.round((now - st) / 1000)) : 0;
+        const flinkDelay = ft ? Math.max(0, Math.round((now - ft) / 1000)) : 0;
+        latencyChart.setOption({ series: [{
+            data: [
+                { value: sparkDelay, itemStyle: { color: sparkColor } },
+                { value: flinkDelay, itemStyle: { color: flinkColor } }
+            ]
+        }] });
+        document.getElementById('latSpark').innerText = sparkDelay + ' 秒前';
+        document.getElementById('latFlink').innerText = flinkDelay + ' 秒前';
+        document.getElementById('latGap').innerText =
+            sparkDelay && flinkDelay ? Math.abs(sparkDelay - flinkDelay) + ' 秒差' : '-- 秒差';
+
+        const sTotal = engineState.spark.windows || 0;
+        const fTotal = engineState.flink.windows || 0;
+        const common = rows.length;
+        const onlyS = Math.max(0, sTotal - common);
+        const onlyF = Math.max(0, fTotal - common);
+        orderlyDonut.setOption({ series: [{ data: [
+            { value: common, name: '双引擎共有', itemStyle: { color: '#35c5ff' } },
+            { value: onlyS, name: '仅 Spark', itemStyle: { color: sparkColor } },
+            { value: onlyF, name: '仅 Flink', itemStyle: { color: flinkColor } }
+        ] }] });
+        orderlyBar.setOption({ series: [{ data: [
+            { value: common, itemStyle: { color: '#35c5ff', borderRadius: [4,4,0,0] } },
+            { value: onlyS, itemStyle: { color: sparkColor, borderRadius: [4,4,0,0] } },
+            { value: onlyF, itemStyle: { color: flinkColor, borderRadius: [4,4,0,0] } }
+        ] }] });
+        document.getElementById('orderlySummary').innerHTML =
+            '<b>📊 覆盖度分析（当前棚 + 最近 ' + engAll.length + ' 个窗口）：</b>' +
+            '<br>双引擎共有 <b>' + common + '</b> 个窗口，Spark 仅额外覆盖 <b>' + onlyS + '</b> 个，Flink 仅额外覆盖 <b>' + onlyF + '</b> 个。' +
+            (common ? '对齐率 <b>' + Math.round(common / Math.max(1, sTotal + fTotal - common) * 100) + '%</b>。' : ' 暂无窗口对齐。');
+
+        const allSpark = engineState.spark.windows || 0;
+        const allFlink = engineState.flink.windows || 0;
+        const sparkCur = common + onlyS;
+        const flinkCur = common + onlyF;
+        efficiencyChart.setOption({ series: [
+            { id: 'eff_spark', data: [sparkCur, allSpark] },
+            { id: 'eff_flink', data: [flinkCur, allFlink] }
+        ] });
+        document.getElementById('effSparkTotal').innerText = allSpark;
+        document.getElementById('effFlinkTotal').innerText = allFlink;
+        document.getElementById('effFreq').innerText = '0.2/秒';
+
+        biasChart.setOption({ series: [{ data: [
+            { value: +avg('diff_temp'),  itemStyle: { color: '#ff8a4c', borderRadius: [4,4,0,0] } },
+            { value: +avg('diff_hum'),   itemStyle: { color: '#27c8f0', borderRadius: [4,4,0,0] } },
+            { value: +avg('diff_light'), itemStyle: { color: '#ffd23c', borderRadius: [4,4,0,0] } }
+        ] }] });
+
+        resizeActiveTabCharts();
+    }
+
+    async function loadEngineCompare() {
+        try {
+            const j = await (await fetch('/api/engine_compare')).json();
+            engineState.spark = j.spark;
+            engineState.flink = j.flink;
+            setEngine('spark', j.spark);
+            setEngine('flink', j.flink);
+            engAll = j.aligned || [];
+            renderEngine();
+        } catch (e) {}
+    }
+    setInterval(loadEngineCompare, 5000); loadEngineCompare();
+
+    /* ============ 选中大棚：刷新趋势/仪表盘/占比/光照 ============ */
+    function updateSelected() {
+        const g = state.selected, b = bufs[g];
+        lineChart.setOption({ xAxis: { data: b.time },
+            series: [{ data: b.temp }, { data: b.hum }, { data: b.light }] });
+        lightChart.setOption({ xAxis: { data: b.time }, series: [{ data: b.light }] });
+
+        const lt = state.latest[g] || { t: 0, h: 0, l: 0 };
+        gaugeChart.setOption({ series: [
+            { data: [{ value: lt.t }] }, { data: [{ value: lt.t }] }, { data: [{ value: lt.t }] }
+        ] });
+
+        // 环境占比：按各自量程归一化后的相对份额
+        const T = lt.t / 50, H = lt.h / 100, L = lt.l / 6000;
+        const tot = (T + H + L) || 1;
+        donutChart.setOption({ series: [{ data: [
+            { value: Math.max(T / tot * 100, .001), name: '温度', itemStyle: { color: C.temp } },
+            { value: Math.max(H / tot * 100, .001), name: '湿度', itemStyle: { color: C.hum } },
+            { value: Math.max(L / tot * 100, .001), name: '光照(k)', itemStyle: { color: C.light } }
+        ] }] });
+    }
+
+    /* ============ 卡片 / 对比 / 告警 / 头部统计 ============ */
+    function updateCard(g) {
+        const s = state.latest[g]; if (!s) return;
+        document.getElementById('ct_' + g).innerText = s.t.toFixed(1);
+        document.getElementById('ch_' + g).innerText = s.h.toFixed(1);
+        document.getElementById('cl_' + g).innerText = s.l;
+        document.getElementById('cw_' + g).innerText = s.win;
+        const badge = document.getElementById('badge_' + g);
+        const card = document.getElementById('card_' + g);
+        if (s.t > 30) {
+            badge.className = 'badge warn';
+            badge.querySelector('span').innerText = '高温告警';
+            card.classList.add('alert');
+        } else {
+            badge.className = 'badge ok';
+            badge.querySelector('span').innerText = '运行正常';
+            card.classList.remove('alert');
+        }
+    }
+
+    function updateCompare() {
+        const dim = g => ({ itemStyle: { opacity: g === state.selected ? 1 : .3 } });
+        cmpChart.setOption({ series: [
+            { data: GHS.map(g => {
+                const v = state.latest[g] ? state.latest[g].t : 0;
+                return Object.assign({ value: v }, dim(g)); }) },
+            { data: GHS.map(g => {
+                const v = state.latest[g] ? state.latest[g].h : 0;
+                return Object.assign({ value: v }, dim(g)); }) }
+        ] });
+    }
+
+    function renderAlarms() {
+        document.getElementById('alarmCnt').innerText = state.alarms.length;
+        const box = document.getElementById('alarmList');
+        if (!state.alarms.length) {
+            box.innerHTML = '<div class="alarm-empty">✅ 暂无高温告警，各棚环境正常</div>';
+            return;
+        }
+        box.innerHTML = state.alarms.map(a =>
+            '<div class="alarm-row"><span class="gh">⚠ ' + a.gh + '</span><b>' + a.temp + '℃</b>' +
+            '<span class="tm">' + a.time + '</span></div>').join('');
+    }
+
+    function updateHeader() {
+        document.getElementById('stOnline').innerText = GHS.filter(g => state.latest[g]).length;
+        document.getElementById('stWin').innerText = state.win;
+        document.getElementById('stAlarm').innerText = state.alarm;
+    }
+
+    /* ============ 导出功能 ============ */
+    const exportDrop = document.getElementById('exportDrop');
+    document.getElementById('dropToggle').addEventListener('click', e => {
+        e.stopPropagation();
+        exportDrop.classList.toggle('open');
+    });
+    document.addEventListener('click', () => exportDrop.classList.remove('open'));
+    document.querySelector('.drop-menu').addEventListener('click', () => exportDrop.classList.remove('open'));
+
+    document.getElementById('btnCsv').onclick = () => {
+        let has = false, csv = '\ufeff采集时间,大棚,平均温度(℃),平均湿度(%),最大光照(lux)\n';
+        GHS.forEach(g => {
+            const b = bufs[g];
+            for (let i = 0; i < b.full.length; i++) {
+                has = true;
+                csv += b.full[i] + ',' + g + ',' + b.temp[i] + ',' + b.hum[i] + ',' + b.light[i] + '\n';
+            }
+        });
+        if (!has) { alert('暂无数据，请等待实时推送'); return; }
+        dl(URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })),
+           '三个大棚实时数据_' + nowStamp() + '.csv');
+    };
+    document.getElementById('btnPng').onclick = () => {
+        dl(lineChart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#041028' }),
+           state.selected + '_趋势图_' + nowStamp() + '.png');
+    };
+    document.getElementById('btnPdf').onclick = () => {
+        if (typeof html2canvas === 'undefined' || typeof jspdf === 'undefined') {
+            alert('PDF 导出库未加载，请检查网络后刷新页面重试');
+            return;
+        }
+        const btn = document.getElementById('btnPdf');
+        const oldText = btn.innerText;
+        btn.innerText = '正在导出…';
+        html2canvas(document.body, {
+            backgroundColor: '#041533',
+            scale: 1.5,
+            useCORS: true,
+            logging: false
+        }).then(canvas => {
+            const imgData = canvas.toDataURL('image/png');
+            const { jsPDF } = jspdf;
+            const pdf = new jsPDF({
+                orientation: 'landscape',
+                unit: 'px',
+                format: [canvas.width, canvas.height]
+            });
+            pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+            pdf.save('智慧农业大棚监测大屏_' + nowStamp() + '.pdf');
+            btn.innerText = oldText;
+        }).catch(() => {
+            alert('导出失败，请刷新页面重试');
+            btn.innerText = oldText;
+        });
+    };
+
+    /* ============ SocketIO 实时数据 ============ */
+    const pushBadge = document.getElementById('pushBadge');
+    const pushText = document.getElementById('pushText');
+    socket.on('connect', () => { pushBadge.classList.remove('off'); pushText.innerText = '实时推送中'; });
+    socket.on('disconnect', () => { pushBadge.classList.add('off'); pushText.innerText = '连接断开'; });
+
+    /* 处理单个大棚的一个数据点。
+       derive=true（后端无大棚标识的单路流兜底）才按偏移派生；
+       后端已按真实大棚区分时直接使用原值，仅做量程钳制。 */
+    function handlePoint(gh, rawT, rawH, rawL, ts, derive) {
+        const b = bufs[gh]; if (!b) return;
+        const gi = GHS.indexOf(gh), off = GH_OFF[gi] || { dt: 0, dh: 0, dl: 1 };
+        const tV = clamp(derive ? +rawT + off.dt : +rawT, 0, 50);
+        const hV = clamp(derive ? +rawH + off.dh : +rawH, 0, 100);
+        const lV = clamp(derive ? +rawL * off.dl : +rawL, 0, 6000);
+
+        const t = +tV.toFixed(1), h = +hV.toFixed(1), l = Math.round(lV);
+        let dt = new Date(ts);
+        if (isNaN(dt.getTime())) dt = new Date();   // ts 缺失/非法时用当前时间兜底
+        const time = dt.toLocaleTimeString('zh-CN', { hour12: false });
+        const full = fmtFull(dt);
+
+        // 5 秒窗口 + update 模式可能重复推送同一窗口：同棚同一秒只更新末点，不新增
+        const sameLast = b.full.length > 0 && b.full[b.full.length - 1] === full;
+        if (sameLast) {
+            const i = b.full.length - 1;
+            b.time[i] = time; b.temp[i] = +tV.toFixed(2);
+            b.hum[i] = +hV.toFixed(2); b.light[i] = l;
+        } else {
+            state.win++;
+            b.time.push(time); b.full.push(full);
+            b.temp.push(+tV.toFixed(2)); b.hum.push(+hV.toFixed(2)); b.light.push(l);
+            if (b.time.length > MAXPTS) {
+                b.time.shift(); b.full.shift(); b.temp.shift(); b.hum.shift(); b.light.shift();
+            }
+        }
+
+        state.latest[gh] = { t: t, h: h, l: l, win: time.slice(0, 5) };
+
+        // 高温告警只在新窗口首次越过 30℃ 时记录，避免同窗口重复刷屏
+        if (!sameLast && tV > 30) {
+            state.alarm++;
+            state.alarms.unshift({ gh: gh, temp: t, time: full });
+            if (state.alarms.length > 50) state.alarms.pop();
+            renderAlarms();
+        }
+
+        updateCard(gh);
+        updateCompare();
+        updateHeader();
+        if (gh === state.selected) updateSelected();
+    }
+
+    socket.on('agri_update', d => {
+        if (d.air_temp_avg == null) return;
+        if (d.greenhouse_id) {
+            // 后端已按真实大棚区分：gh_01/gh_02/gh_03 -> 中文大棚名
+            const g = GH_ID2NAME[d.greenhouse_id] ||
+                (GHS.indexOf(d.greenhouse_id) >= 0 ? d.greenhouse_id : null);
+            if (g) handlePoint(g, d.air_temp_avg, d.air_humidity_avg, d.light_avg, d.ts, false);
+        } else {
+            // 后端为单路实时流：同一条基准为三个大棚各派生一条数据
+            GHS.forEach(gh => handlePoint(gh, d.air_temp_avg, d.air_humidity_avg, d.light_avg, d.ts, true));
+        }
+    });
+
+    renderAlarms();
+    updateHeader();
+    updateSelected();
+
+    window.addEventListener('resize', () => {
+        lineChart.resize(); gaugeChart.resize(); cmpChart.resize();
+        donutChart.resize(); lightChart.resize();
+        radarChart.resize();
+        // 懒初始化的图表可能尚未创建，需判空
+        if (latencyChart) latencyChart.resize();
+        if (orderlyDonut) orderlyDonut.resize();
+        if (orderlyBar) orderlyBar.resize();
+        if (efficiencyChart) efficiencyChart.resize();
+        if (biasChart) biasChart.resize();
+    });
+</script>
+</body>
+</html>
